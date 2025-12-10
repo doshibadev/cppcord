@@ -8,6 +8,11 @@
 #include <QListWidget>
 #include <QPainter>
 #include <QBrush>
+#include <QNetworkAccessManager>
+#include <QNetworkRequest>
+#include <QNetworkReply>
+#include <QBuffer>
+#include <QLocale>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent),
@@ -624,12 +629,14 @@ void MainWindow::addMessage(const Message &message)
     QScrollBar *scrollBar = m_messageLog->verticalScrollBar();
     bool wasAtBottom = (scrollBar->value() >= scrollBar->maximum() - 10);
 
+    // Download avatar if not cached
+    if (!m_userAvatars.contains(message.author.id) && !message.author.avatar.isEmpty())
+    {
+        downloadUserAvatar(message.author.id, message.author.avatar);
+    }
+
     // Add message to display
-    QString timestamp = message.timestamp.toString("hh:mm AP");
-    m_messageLog->append(QString("[%1] %2: %3")
-                             .arg(timestamp)
-                             .arg(message.author.username)
-                             .arg(message.content));
+    m_messageLog->append(formatMessageHtml(message));
 
     // Auto-scroll to bottom only if user was already at bottom
     if (wasAtBottom)
@@ -655,12 +662,176 @@ void MainWindow::displayMessages()
 
     m_messageLog->setAlignment(Qt::AlignLeft);
 
-    for (const Message &msg : m_currentMessages)
+    QDate lastDate;
+    Snowflake lastAuthorId = 0;
+    QDateTime lastTimestamp;
+
+    for (int i = 0; i < m_currentMessages.size(); ++i)
     {
-        QString timestamp = msg.timestamp.toString("hh:mm AP");
-        m_messageLog->append(QString("[%1] %2: %3")
-                                 .arg(timestamp)
-                                 .arg(msg.author.username)
-                                 .arg(msg.content));
+        const Message &msg = m_currentMessages[i];
+
+        // Download avatar if not cached
+        if (!m_userAvatars.contains(msg.author.id) && !msg.author.avatar.isEmpty())
+        {
+            downloadUserAvatar(msg.author.id, msg.author.avatar);
+        }
+
+        // Check if we need a date separator
+        QDate msgDate = msg.timestamp.date();
+        if (msgDate != lastDate)
+        {
+            QString dateText;
+            QDate today = QDate::currentDate();
+            if (msgDate == today)
+                dateText = "Today";
+            else if (msgDate == today.addDays(-1))
+                dateText = "Yesterday";
+            else
+                dateText = msgDate.toString("MMMM d, yyyy");
+
+            m_messageLog->append(QString(
+                                     "<div style='position: relative; margin: 16px 16px; height: 1px; background: #3f4147;'>"
+                                     "  <span style='position: absolute; left: 50%%; transform: translateX(-50%%); top: -9px; "
+                                     "         background: #36393f; padding: 2px 8px; color: #72767d; font-size: 12px; font-weight: 600;'>%1</span>"
+                                     "</div>")
+                                     .arg(dateText));
+
+            lastDate = msgDate;
+            lastAuthorId = 0; // Reset grouping after date separator
+        }
+
+        // Check if this message should be grouped with previous
+        bool shouldGroup = false;
+        if (i > 0 && msg.author.id == lastAuthorId)
+        {
+            // Group if same author and within 5 minutes
+            qint64 timeDiff = lastTimestamp.secsTo(msg.timestamp);
+            if (timeDiff < 300) // 5 minutes
+            {
+                shouldGroup = true;
+            }
+        }
+
+        m_messageLog->append(formatMessageHtml(msg, shouldGroup));
+
+        lastAuthorId = msg.author.id;
+        lastTimestamp = msg.timestamp;
     }
+}
+
+QString MainWindow::formatMessageHtml(const Message &msg, bool grouped)
+{
+    // Use system locale for time formatting
+    QLocale locale;
+    QString timestamp = locale.toString(msg.timestamp.time(), QLocale::ShortFormat);
+
+    if (grouped)
+    {
+        // Grouped message - indent to align with first message content
+        QString html = QString(
+                           "<div style='margin: 0 16px 0 16px; padding: 0; display: flex;'>"
+                           "  <div style='width: 40px; flex-shrink: 0;'></div>" // Avatar space
+                           "  <div style='width: 16px; flex-shrink: 0;'></div>" // Margin space
+                           "  <div style='flex: 1; color: #dcddde; font-size: 15px; line-height: 1.375; word-wrap: break-word;'>%1</div>"
+                           "</div>")
+                           .arg(msg.content.toHtmlEscaped().replace("\n", "<br>"));
+
+        return html;
+    }
+
+    // Get avatar as base64 data URL or use default
+    QString avatarData;
+    if (m_userAvatars.contains(msg.author.id))
+    {
+        QPixmap avatar = m_userAvatars[msg.author.id];
+        QByteArray ba;
+        QBuffer buffer(&ba);
+        buffer.open(QIODevice::WriteOnly);
+        avatar.save(&buffer, "PNG");
+        avatarData = QString("data:image/png;base64,%1").arg(QString(ba.toBase64()));
+    }
+    else
+    {
+        // Default gray circle with first letter of username
+        avatarData = "data:image/svg+xml;base64," + QString::fromLatin1(
+                                                        QString("<svg width='40' height='40' xmlns='http://www.w3.org/2000/svg'>"
+                                                                "<circle cx='20' cy='20' r='20' fill='#5865F2'/>"
+                                                                "<text x='20' y='28' font-size='18' fill='white' text-anchor='middle' font-family='Arial'>%1</text>"
+                                                                "</svg>")
+                                                            .arg(msg.author.username.left(1).toUpper())
+                                                            .toUtf8()
+                                                            .toBase64());
+    }
+
+    // First message in group - show avatar, username and timestamp
+    QString html = QString(
+                       "<div style='margin: 16px 16px 0 16px; display: flex;'>"
+                       "  <div style='width: 40px; flex-shrink: 0;'>"
+                       "    <img src='%1' width='40' height='40' style='border-radius: 50%%;'/>"
+                       "  </div>"
+                       "  <div style='width: 16px; flex-shrink: 0;'></div>" // Fixed margin
+                       "  <div style='flex: 1;'>"
+                       "    <div style='margin-bottom: 2px;'>"
+                       "      <span style='color: #ffffff; font-weight: 600; font-size: 16px;'>%2</span>"
+                       "      <span style='color: #a3a6aa; font-size: 12px; margin-left: 8px; font-weight: 400;'>%3</span>"
+                       "    </div>"
+                       "    <div style='color: #dcddde; font-size: 15px; line-height: 1.375; word-wrap: break-word;'>%4</div>"
+                       "  </div>"
+                       "</div>")
+                       .arg(avatarData)
+                       .arg(msg.author.username.toHtmlEscaped())
+                       .arg(timestamp)
+                       .arg(msg.content.toHtmlEscaped().replace("\n", "<br>"));
+
+    return html;
+}
+
+QString MainWindow::getUserAvatarUrl(Snowflake userId, const QString &avatarHash) const
+{
+    if (avatarHash.isEmpty())
+        return QString();
+
+    // Discord CDN URL format: https://cdn.discordapp.com/avatars/{user_id}/{avatar_hash}.png
+    QString extension = avatarHash.startsWith("a_") ? ".gif" : ".png";
+    return QString("https://cdn.discordapp.com/avatars/%1/%2%3")
+        .arg(userId)
+        .arg(avatarHash)
+        .arg(extension);
+}
+
+void MainWindow::downloadUserAvatar(Snowflake userId, const QString &avatarHash)
+{
+    if (avatarHash.isEmpty())
+        return;
+
+    QString avatarUrl = getUserAvatarUrl(userId, avatarHash);
+    QNetworkAccessManager *networkManager = new QNetworkAccessManager(this);
+    QNetworkRequest request(avatarUrl);
+
+    QNetworkReply *reply = networkManager->get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, userId]()
+            {
+        if (reply->error() == QNetworkReply::NoError)
+        {
+            QByteArray imageData = reply->readAll();
+            QPixmap pixmap;
+            if (pixmap.loadFromData(imageData))
+            {
+                // Create circular avatar
+                QPixmap rounded(40, 40);
+                rounded.fill(Qt::transparent);
+                QPainter painter(&rounded);
+                painter.setRenderHint(QPainter::Antialiasing);
+
+                QPixmap scaled = pixmap.scaled(40, 40, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
+                painter.setBrush(QBrush(scaled));
+                painter.setPen(Qt::NoPen);
+                painter.drawEllipse(0, 0, 40, 40);
+
+                m_userAvatars[userId] = rounded;
+
+                // Don't refresh entire display - avatar will show on next message or reload
+            }
+        }
+        reply->deleteLater(); });
 }

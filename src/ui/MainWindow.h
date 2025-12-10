@@ -39,6 +39,7 @@ private:
     QList<Message> m_currentMessages; // Messages for current channel
     bool m_isLoadingMessages;
     bool m_hasMoreMessages;
+    QMap<Snowflake, QPixmap> m_userAvatars; // Cache for user avatars
 
     void setupUI();
     void connectSignals();
@@ -50,6 +51,9 @@ private:
     void updateChannelList();
     void sortGuildList();
     void updateMessageInputPermissions();
+    void downloadUserAvatar(Snowflake userId, const QString &avatarHash);
+    QString getUserAvatarUrl(Snowflake userId, const QString &avatarHash) const;
+    QString formatMessageHtml(const Message &msg, bool grouped = false);
     void onGuildSelected(QListWidgetItem *item);
     void onChannelSelected(QListWidgetItem *item);
     void onScrollValueChanged(int value);
