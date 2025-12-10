@@ -73,7 +73,7 @@ The official Discord client is built with Electron, which bundles an entire Chro
 
 2. **Clone the repository**
    ```bash
-   git clone https://github.com/yourusername/cppcord.git
+   git clone https://github.com/doshibadev/cppcord.git
    cd cppcord
    ```
 
