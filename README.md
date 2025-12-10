@@ -191,7 +191,7 @@ Contributions are welcome! Please feel free to submit issues and pull requests.
 
 ## License
 
-[Choose your license - MIT, GPL, etc.]
+MIT
 
 ## Disclaimer
 
@@ -205,7 +205,7 @@ This is an unofficial Discord client. Use at your own risk. The Discord API term
 
 ## Contact
 
-[Your contact information or links]
+Discord Username: doshibadev
 
 ---
 
