@@ -1,0 +1,141 @@
+# Build directories
+build/
+cmake-build-*/
+out/
+
+# Qt generated files
+*.autosave
+*.pro.user
+*.pro.user.*
+moc_*.cpp
+moc_*.h
+qrc_*.cpp
+ui_*.h
+*.qm
+.qmake.cache
+.qmake.stash
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+CTestTestfile.cmake
+_deps
+
+# Visual Studio / MSVC
+.vs/
+*.sln
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+x64/
+x86/
+[Dd]ebug/
+[Dd]ebugPublic/
+[Rr]elease/
+[Rr]eleases/
+*.obj
+*.pdb
+*.ilk
+*.log
+*.tlog
+*.idb
+*.res
+*.pch
+*.ipch
+
+# VSCode
+.vscode/
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+*.code-workspace
+
+# Compiled Object files
+*.slo
+*.lo
+*.o
+*.obj
+*.ko
+*.elf
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Compiled Dynamic libraries
+*.so
+*.dylib
+*.dll
+
+# Fortran module files
+*.mod
+*.smod
+
+# Compiled Static libraries
+*.lai
+*.la
+*.a
+*.lib
+
+# Executables
+*.exe
+*.out
+*.app
+*.i*86
+*.x86_64
+*.hex
+
+# Qt specific
+Makefile*
+*.qrc.depends
+*.moc
+
+# OS specific
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# IDE - Qt Creator
+*.autosave
+CMakeLists.txt.user*
+
+# Temporary files
+*~
+*.swp
+*.swo
+*.tmp
+*.bak
+*.backup
+
+# Credentials and secrets (important for Discord tokens!)
+*.env
+.env
+config.ini
+secrets.json
+token.txt
+auth_token.txt
+
+# Package managers
+conan/
+vcpkg_installed/
+
+# Dependencies
+external/
+third_party/
+!external/README.md
+!third_party/README.md
