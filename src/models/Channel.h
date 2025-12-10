@@ -15,6 +15,15 @@ enum class ChannelType
     UNKNOWN = -1
 };
 
+// Permission overwrite for a channel
+struct PermissionOverwrite
+{
+    Snowflake id;  // Role or user ID
+    int type;      // 0 = role, 1 = member
+    quint64 allow; // Allowed permission bits
+    quint64 deny;  // Denied permission bits
+};
+
 struct Channel
 {
     Snowflake id;
@@ -24,6 +33,7 @@ struct Channel
     QString name;
     QString topic;
     Snowflake lastMessageId;
+    QList<PermissionOverwrite> permissionOverwrites;
 
     // For DMs
     QList<User> recipients;

@@ -41,6 +41,9 @@ public:
     const QList<Guild> &getGuilds() const { return m_guilds; }
     const QList<Channel> &getPrivateChannels() const { return m_privateChannels; }
 
+    // Permission checking
+    bool canViewChannel(const Guild &guild, const Channel &channel) const;
+
 signals:
     void loginSuccess();
     void mfaRequired(const QString &ticket);
@@ -65,6 +68,7 @@ private:
     // State
     QList<Guild> m_guilds;
     QList<Channel> m_privateChannels;
+    User m_user; // Current user info
 
     // Event handlers
     void handleGatewayEvent(const QString &eventName, const QJsonObject &data);

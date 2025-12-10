@@ -274,6 +274,7 @@ void DiscordClient::handleUserInfoResponse(QNetworkReply *reply)
     user.avatar = obj["avatar"].toString();
     user.bot = obj["bot"].toBool(false);
 
+    m_user = user; // Store current user
     emit userInfoReceived(user);
 }
 
@@ -324,6 +325,8 @@ void DiscordClient::getChannelMessages(Snowflake channelId)
 
 void DiscordClient::handleGatewayEvent(const QString &eventName, const QJsonObject &data)
 {
+    qDebug() << "Gateway Event:" << eventName;
+
     if (eventName == "READY")
     {
         handleReady(data);
@@ -340,6 +343,14 @@ void DiscordClient::handleGatewayEvent(const QString &eventName, const QJsonObje
 
 void DiscordClient::handleReady(const QJsonObject &data)
 {
+    // Store current user info
+    QJsonObject userObj = data["user"].toObject();
+    m_user.id = userObj["id"].toString().toULongLong();
+    m_user.username = userObj["username"].toString();
+    m_user.discriminator = userObj["discriminator"].toString();
+    m_user.avatar = userObj["avatar"].toString();
+    m_user.bot = userObj["bot"].toBool(false);
+
     // Handle private channels (DMs)
     m_privateChannels.clear();
     QJsonArray privateChannels = data["private_channels"].toArray();
@@ -371,8 +382,25 @@ void DiscordClient::handleReady(const QJsonObject &data)
         emit channelCreated(channel);
     }
 
-    // Guilds in READY are unavailable initially, we wait for GUILD_CREATE
+    // For user accounts, guilds are included in READY
+    // For bot accounts, guilds come later via GUILD_CREATE events
     m_guilds.clear();
+    QJsonArray guilds = data["guilds"].toArray();
+
+    for (const QJsonValue &val : guilds)
+    {
+        QJsonObject guildObj = val.toObject();
+
+        // Check if guild is unavailable (outage scenario)
+        if (guildObj["unavailable"].toBool(false))
+        {
+            qDebug() << "Guild unavailable:" << guildObj["id"].toString();
+            continue;
+        }
+
+        // Parse guild data (user accounts get full guild objects in READY)
+        handleGuildCreate(guildObj);
+    }
 }
 
 void DiscordClient::handleGuildCreate(const QJsonObject &data)
@@ -382,6 +410,38 @@ void DiscordClient::handleGuildCreate(const QJsonObject &data)
     guild.name = data["name"].toString();
     guild.icon = data["icon"].toString();
     guild.ownerId = data["owner_id"].toString().toULongLong();
+
+    // Parse roles and their permissions
+    QJsonArray rolesArray = data["roles"].toArray();
+    for (const QJsonValue &roleVal : rolesArray)
+    {
+        QJsonObject roleObj = roleVal.toObject();
+        Role role;
+        role.id = roleObj["id"].toString().toULongLong();
+        role.name = roleObj["name"].toString();
+        role.permissions = roleObj["permissions"].toString().toULongLong();
+        role.position = roleObj["position"].toInt();
+        guild.roles[role.id] = role;
+    }
+
+    // Parse current user's roles in this guild
+    QJsonArray members = data["members"].toArray();
+    for (const QJsonValue &memberVal : members)
+    {
+        QJsonObject memberObj = memberVal.toObject();
+        QJsonObject userObj = memberObj["user"].toObject();
+
+        // Check if this is the current user
+        if (userObj["id"].toString().toULongLong() == m_user.id)
+        {
+            QJsonArray roles = memberObj["roles"].toArray();
+            for (const QJsonValue &roleVal : roles)
+            {
+                guild.memberRoles.append(roleVal.toString().toULongLong());
+            }
+            break;
+        }
+    }
 
     QJsonArray channels = data["channels"].toArray();
     for (const QJsonValue &val : channels)
@@ -395,6 +455,19 @@ void DiscordClient::handleGuildCreate(const QJsonObject &data)
         channel.topic = channelObj["topic"].toString();
         channel.position = channelObj["position"].toInt();
         channel.lastMessageId = channelObj["last_message_id"].toString().toULongLong();
+
+        // Parse permission overwrites
+        QJsonArray overwrites = channelObj["permission_overwrites"].toArray();
+        for (const QJsonValue &overwriteVal : overwrites)
+        {
+            QJsonObject overwriteObj = overwriteVal.toObject();
+            PermissionOverwrite overwrite;
+            overwrite.id = overwriteObj["id"].toString().toULongLong();
+            overwrite.type = overwriteObj["type"].toInt();
+            overwrite.allow = overwriteObj["allow"].toString().toULongLong();
+            overwrite.deny = overwriteObj["deny"].toString().toULongLong();
+            channel.permissionOverwrites.append(overwrite);
+        }
 
         guild.channels.append(channel);
     }
@@ -412,4 +485,76 @@ void DiscordClient::handleMessageCreate(const QJsonObject &data)
 {
     // For now we just use the existing messageReceived signal for the string log
     // In future we parse Message object
+}
+
+bool DiscordClient::canViewChannel(const Guild &guild, const Channel &channel) const
+{
+    // DM channels are always viewable
+    if (channel.isDm())
+        return true;
+
+    // If user is guild owner, they can view all channels
+    if (guild.ownerId == m_user.id)
+        return true;
+
+    // Start with @everyone role base permissions
+    quint64 basePermissions = 0;
+    if (guild.roles.contains(guild.id))
+    {
+        basePermissions = guild.roles[guild.id].permissions;
+    }
+
+    // Apply user's role permissions (highest role position wins for base permissions)
+    for (Snowflake roleId : guild.memberRoles)
+    {
+        if (guild.roles.contains(roleId))
+        {
+            const Role &role = guild.roles[roleId];
+
+            // If any role has ADMINISTRATOR, user can see everything
+            if (role.permissions & Permissions::ADMINISTRATOR)
+                return true;
+
+            basePermissions |= role.permissions;
+        }
+    }
+
+    // Start with base permissions
+    quint64 permissions = basePermissions;
+
+    // Apply @everyone channel overwrites
+    for (const PermissionOverwrite &overwrite : channel.permissionOverwrites)
+    {
+        if (overwrite.id == guild.id && overwrite.type == 0)
+        {
+            permissions &= ~overwrite.deny;
+            permissions |= overwrite.allow;
+        }
+    }
+
+    // Apply user's role channel overwrites
+    for (Snowflake roleId : guild.memberRoles)
+    {
+        for (const PermissionOverwrite &overwrite : channel.permissionOverwrites)
+        {
+            if (overwrite.id == roleId && overwrite.type == 0)
+            {
+                permissions &= ~overwrite.deny;
+                permissions |= overwrite.allow;
+            }
+        }
+    }
+
+    // Apply user-specific overwrites (highest priority)
+    for (const PermissionOverwrite &overwrite : channel.permissionOverwrites)
+    {
+        if (overwrite.id == m_user.id && overwrite.type == 1) // Member overwrite
+        {
+            permissions &= ~overwrite.deny;
+            permissions |= overwrite.allow;
+        }
+    }
+
+    // Check if user has VIEW_CHANNEL permission
+    return (permissions & Permissions::VIEW_CHANNEL) != 0;
 }

@@ -107,12 +107,13 @@ void MainWindow::connectSignals()
 
     connect(m_client, &DiscordClient::guildCreated, [this](const Guild &guild)
             {
-        // Determine if we should update list
-        // Yes, just add item
-        QListWidgetItem *item = new QListWidgetItem(guild.name);
-        item->setData(Qt::UserRole, QString::number(guild.id));
+        // Add guild to the list
+        QListWidgetItem *item = new QListWidgetItem(guild.name.left(2).toUpper());
+        item->setData(Qt::UserRole, QVariant::fromValue(guild.id));
         item->setToolTip(guild.name);
-        m_guildList->addItem(item); });
+        item->setTextAlignment(Qt::AlignCenter);
+        m_guildList->addItem(item);
+        qDebug() << "Added guild to UI:" << guild.name << "(ID:" << guild.id << ")"; });
 
     connect(m_client, &DiscordClient::channelCreated, [this](const Channel &channel)
             {
@@ -270,6 +271,12 @@ void MainWindow::updateChannelList()
             {
                 for (const Channel &c : g.channels)
                 {
+                    // Filter out channels the user can't view
+                    if (!m_client->canViewChannel(g, c))
+                    {
+                        continue;
+                    }
+
                     if (c.type == 4)
                     { // Category
                         QListWidgetItem *item = new QListWidgetItem(c.name.toUpper());

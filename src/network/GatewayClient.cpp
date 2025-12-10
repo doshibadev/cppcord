@@ -133,11 +133,15 @@ void GatewayClient::sendIdentify()
     data["properties"] = properties;
     data["compress"] = false;
 
-    // Intents: GUILDS (1) | GUILD_MESSAGES (512) | DIRECT_MESSAGES (4096)
-    // 1 + 512 + 4096 = 4609
-    // For now, let's just ask for 513 (GUILDS | GUILD_MESSAGES) or 32767 (All non-privileged)
-    // Let's stick to 513 for basic test.
-    data["intents"] = 513;
+    // Gateway Intents:
+    // GUILDS = 1 << 0 = 1
+    // GUILD_MEMBERS = 1 << 1 = 2 (privileged)
+    // GUILD_MESSAGES = 1 << 9 = 512
+    // GUILD_MESSAGE_REACTIONS = 1 << 10 = 1024
+    // DIRECT_MESSAGES = 1 << 12 = 4096
+    // MESSAGE_CONTENT = 1 << 15 = 32768 (privileged)
+    // Non-privileged intents: 1 + 512 + 1024 + 4096 = 5633
+    data["intents"] = 5633;
 
     QJsonObject payload;
     payload["op"] = 2; // Identify
@@ -162,7 +166,7 @@ void GatewayClient::handleDispatch(const QJsonObject &payload)
 {
     QString eventName = payload["t"].toString();
     QJsonObject data = payload["d"].toObject();
-    
+
     // Always emit the raw event for DiscordClient to process
     emit eventReceived(eventName, data);
 
