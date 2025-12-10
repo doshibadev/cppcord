@@ -141,7 +141,8 @@ void GatewayClient::sendIdentify()
     // DIRECT_MESSAGES = 1 << 12 = 4096
     // MESSAGE_CONTENT = 1 << 15 = 32768 (privileged)
     // Non-privileged intents: 1 + 512 + 1024 + 4096 = 5633
-    data["intents"] = 5633;
+    // We try to request 37377 (standard + content) to get message content
+    data["intents"] = 37377;
 
     QJsonObject payload;
     payload["op"] = 2; // Identify

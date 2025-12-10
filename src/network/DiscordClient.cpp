@@ -6,6 +6,7 @@
 #include <QDebug>
 #include <QRandomGenerator>
 #include <QSysInfo>
+#include <QPixmap>
 #include <algorithm> // for std::sort
 
 DiscordClient::DiscordClient(QObject *parent)
@@ -370,6 +371,32 @@ void DiscordClient::getChannelMessagesBefore(Snowflake channelId, Snowflake befo
         reply->deleteLater(); });
 }
 
+void DiscordClient::sendMessage(Snowflake channelId, const QString &content)
+{
+    if (!isLoggedIn() || content.isEmpty())
+        return;
+
+    QNetworkRequest request = createRequest(QString("/api/v9/channels/%1/messages").arg(channelId));
+    request.setRawHeader("Authorization", m_token.toUtf8());
+
+    QJsonObject messageData;
+    messageData["content"] = content;
+    // nonce helps identify the message echo
+    messageData["nonce"] = QString::number(QRandomGenerator::global()->generate64());
+
+    QJsonDocument doc(messageData);
+    QByteArray data = doc.toJson();
+
+    QNetworkReply *reply = m_networkManager->post(request, data);
+    connect(reply, &QNetworkReply::finished, this, [this, reply]()
+            {
+        if (reply->error() != QNetworkReply::NoError) {
+            emit apiError("Failed to send message: " + reply->errorString());
+        }
+        // Success is handled via Gateway MESSAGE_CREATE usually, or we can handle it here
+        reply->deleteLater(); });
+}
+
 void DiscordClient::handleGatewayEvent(const QString &eventName, const QJsonObject &data)
 {
     qDebug() << "Gateway Event:" << eventName;
@@ -501,6 +528,7 @@ void DiscordClient::handleGuildCreate(const QJsonObject &data)
         channel.name = channelObj["name"].toString();
         channel.topic = channelObj["topic"].toString();
         channel.position = channelObj["position"].toInt();
+        channel.parentId = channelObj["parent_id"].toString().toULongLong();
         channel.lastMessageId = channelObj["last_message_id"].toString().toULongLong();
 
         // Parse permission overwrites
@@ -519,13 +547,97 @@ void DiscordClient::handleGuildCreate(const QJsonObject &data)
         guild.channels.append(channel);
     }
 
-    // Sort channels by position
-    std::sort(guild.channels.begin(), guild.channels.end(), [](const Channel &a, const Channel &b)
-              { return a.position < b.position; });
+    // Sort channels properly by category hierarchy
+    // 1. Build a map of category positions
+    QMap<Snowflake, int> categoryPositions;
+    for (const Channel &ch : guild.channels)
+    {
+        if (ch.isCategory())
+        {
+            categoryPositions[ch.id] = ch.position;
+        }
+    }
+
+    // 2. Sort: categories and their children grouped together, ordered by category position
+    std::sort(guild.channels.begin(), guild.channels.end(), [&categoryPositions](const Channel &a, const Channel &b)
+              {
+        // Determine effective category position for each channel
+        int aCategoryPos = a.isCategory() ? a.position : (a.parentId != 0 ? categoryPositions.value(a.parentId, 9999) : -1);
+        int bCategoryPos = b.isCategory() ? b.position : (b.parentId != 0 ? categoryPositions.value(b.parentId, 9999) : -1);
+
+        // Uncategorized channels (parentId == 0, not categories) come first
+        bool aUncategorized = !a.isCategory() && a.parentId == 0;
+        bool bUncategorized = !b.isCategory() && b.parentId == 0;
+
+        if (aUncategorized && !bUncategorized)
+            return true;
+        if (!aUncategorized && bUncategorized)
+            return false;
+
+        // If in different categories, sort by category position
+        if (aCategoryPos != bCategoryPos)
+            return aCategoryPos < bCategoryPos;
+
+        // Same category: category header comes first, then channels by position
+        if (a.isCategory() && !b.isCategory())
+            return true;
+        if (!a.isCategory() && b.isCategory())
+            return false;
+
+        // Both channels in same category, sort by position
+        return a.position < b.position; });
 
     m_guilds.append(guild);
     emit guildCreated(guild);
     qDebug() << "Guild created:" << guild.name << "with" << guild.channels.size() << "channels";
+
+    // Download guild icon if available
+    if (!guild.icon.isEmpty())
+    {
+        downloadGuildIcon(guild.id, guild.icon);
+    }
+}
+
+QString DiscordClient::getGuildIconUrl(Snowflake guildId, const QString &iconHash) const
+{
+    if (iconHash.isEmpty())
+        return QString();
+
+    // Discord CDN URL format: https://cdn.discordapp.com/icons/{guild_id}/{icon_hash}.png
+    QString extension = iconHash.startsWith("a_") ? ".gif" : ".png";
+    return QString("https://cdn.discordapp.com/icons/%1/%2%3")
+        .arg(guildId)
+        .arg(iconHash)
+        .arg(extension);
+}
+
+void DiscordClient::downloadGuildIcon(Snowflake guildId, const QString &iconHash)
+{
+    if (iconHash.isEmpty())
+        return;
+
+    QString iconUrl = getGuildIconUrl(guildId, iconHash);
+    QNetworkRequest request(iconUrl);
+
+    QNetworkReply *reply = m_networkManager->get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, guildId]()
+            {
+        if (reply->error() == QNetworkReply::NoError)
+        {
+            QByteArray imageData = reply->readAll();
+            QPixmap pixmap;
+            if (pixmap.loadFromData(imageData))
+            {
+                m_guildIcons[guildId] = pixmap;
+                emit guildIconLoaded(guildId, pixmap);
+                qDebug() << "Guild icon loaded for guild" << guildId;
+            }
+        }
+        else
+        {
+            qDebug() << "Failed to download guild icon:" << reply->errorString();
+        }
+        reply->deleteLater(); });
 }
 
 void DiscordClient::handleMessageCreate(const QJsonObject &data)

@@ -30,6 +30,7 @@ struct Channel
     int type;
     Snowflake guildId; // 0 if DM
     int position;
+    Snowflake parentId; // Category ID (0 if no parent)
     QString name;
     QString topic;
     Snowflake lastMessageId;

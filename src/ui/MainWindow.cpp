@@ -6,6 +6,8 @@
 #include <QDebug>
 #include <QMessageBox>
 #include <QListWidget>
+#include <QPainter>
+#include <QBrush>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent),
@@ -40,11 +42,11 @@ void MainWindow::setupUI()
     // 1. Guild List (Left)
     m_guildList = new QListWidget(m_centralWidget);
     m_guildList->setFixedWidth(72); // Discord style narrow width
-    m_guildList->setIconSize(QSize(48, 48));
+    m_guildList->setIconSize(QSize(40, 40));
     m_guildList->setStyleSheet(
-        "QListWidget { background-color: #202225; border: none; }"
-        "QListWidget::item { padding: 8px; margin: 4px; border-radius: 24px; }"
-        "QListWidget::item:selected { background-color: #5865F2; }"
+        "QListWidget { background-color: #202225; border: none; padding: 0px; }"
+        "QListWidget::item { padding: 0px; margin: 8px 12px; border-radius: 20px; width: 48px; height: 48px; }"
+        "QListWidget::item:selected { background-color: #5865F2; border-radius: 16px; }"
         "QListWidget::item:hover { background-color: #5865F2; border-radius: 16px; }");
 
     // Add "Home" button
@@ -135,6 +137,14 @@ void MainWindow::connectSignals()
     // Scroll detection for loading more messages and showing/hiding scroll button
     connect(m_messageLog->verticalScrollBar(), &QScrollBar::valueChanged, this, &MainWindow::onScrollValueChanged);
 
+    connect(m_messageInput, &QLineEdit::returnPressed, [this]()
+            {
+        QString content = m_messageInput->text();
+        if (!content.isEmpty() && m_selectedChannelId != 0) {
+            m_client->sendMessage(m_selectedChannelId, content);
+            m_messageInput->clear();
+        } });
+
     connect(m_client, &DiscordClient::loginSuccess, [this]()
             {
         // Clear lists or init state
@@ -142,9 +152,10 @@ void MainWindow::connectSignals()
 
     connect(m_client, &DiscordClient::guildCreated, [this](const Guild &guild)
             {
-        // Add guild to the list
+        // Add guild to the list with placeholder icon (2-letter abbreviation)
         QListWidgetItem *item = new QListWidgetItem(guild.name.left(2).toUpper());
         item->setData(Qt::UserRole, QVariant::fromValue(guild.id));
+        item->setData(Qt::UserRole + 1, guild.name); // Store full name
         item->setToolTip(guild.name);
         item->setTextAlignment(Qt::AlignCenter);
         m_guildList->addItem(item);
@@ -183,7 +194,15 @@ void MainWindow::connectSignals()
 
         m_hasMoreMessages = messages.size() >= 50; // Discord returns 50 messages max
         displayMessages();
-        scrollToBottom(); });
+
+        // Scroll to bottom only if this was the initial load
+        // (if we have <= 50 messages, or if we were at the bottom before?)
+        // Actually, if we just loaded the first batch, we want to scroll to bottom.
+        // If we loaded older messages, we want to stay where we were (roughly).
+        // For simplicity, just scroll to bottom on initial load.
+        if (m_currentMessages.size() <= 50) {
+             scrollToBottom();
+        } });
 
     connect(m_client, &DiscordClient::newMessage, this, &MainWindow::addMessage);
 
@@ -191,6 +210,32 @@ void MainWindow::connectSignals()
             { QMessageBox::warning(nullptr, "API Error", error); });
 
     connect(m_client, &DiscordClient::tokenInvalidated, this, &MainWindow::handleTokenInvalidated);
+
+    connect(m_client, &DiscordClient::guildIconLoaded, this, [this](Snowflake guildId, const QPixmap &icon)
+            {
+        // Find the guild item and update its icon
+        for (int i = 0; i < m_guildList->count(); ++i)
+        {
+            QListWidgetItem *item = m_guildList->item(i);
+            if (item->data(Qt::UserRole).toULongLong() == guildId)
+            {
+                // Scale icon to 40x40 and make it circular (smaller to fit better)
+                QPixmap scaled = icon.scaled(40, 40, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
+
+                // Create circular mask
+                QPixmap rounded(40, 40);
+                rounded.fill(Qt::transparent);
+                QPainter painter(&rounded);
+                painter.setRenderHint(QPainter::Antialiasing);
+                painter.setBrush(QBrush(scaled));
+                painter.setPen(Qt::NoPen);
+                painter.drawEllipse(0, 0, 40, 40);
+
+                item->setIcon(QIcon(rounded));
+                item->setText(""); // Remove text placeholder
+                break;
+            }
+        } });
 }
 
 void MainWindow::tryAutoLogin()
@@ -263,6 +308,8 @@ void MainWindow::onChannelSelected(QListWidgetItem *item)
 
     if (ok)
     {
+        qDebug() << "Selected Channel ID:" << m_selectedChannelId << "Name:" << item->text();
+
         // Reset message state for new channel
         m_currentMessages.clear();
         m_hasMoreMessages = true;
@@ -286,8 +333,13 @@ void MainWindow::updateChannelList()
 
     if (m_selectedGuildId == 0)
     {
-        // Show DMs
-        const QList<Channel> &dms = m_client->getPrivateChannels();
+        // Show DMs - sorted by last message ID (descending)
+        QList<Channel> dms = m_client->getPrivateChannels();
+
+        // Sort by last message ID in descending order (most recent first)
+        std::sort(dms.begin(), dms.end(), [](const Channel &a, const Channel &b)
+                  { return a.lastMessageId > b.lastMessageId; });
+
         for (const Channel &dm : dms)
         {
             QString name = dm.name;
@@ -330,18 +382,23 @@ void MainWindow::updateChannelList()
                         continue;
                     }
 
-                    if (c.type == 4)
-                    { // Category
+                    if (c.isCategory())
+                    {
                         QListWidgetItem *item = new QListWidgetItem(c.name.toUpper());
                         item->setFlags(Qt::NoItemFlags); // Not selectable
-                        // Styling for category
+                        QFont font = item->font();
+                        font.setBold(true);
+                        font.setPointSize(9);
+                        item->setFont(font);
+                        item->setForeground(QColor(150, 150, 150));
                         m_channelList->addItem(item);
                     }
-                    else
+                    else if (!c.isCategory())
                     {
-                        // Indent if under category (not tracking parent yet)
-                        QString icon = (c.type == 2) ? "🔊 " : "# ";
-                        QListWidgetItem *item = new QListWidgetItem(icon + c.name);
+                        // Indent channels that are under a category
+                        QString prefix = c.parentId != 0 ? "    " : "";
+                        QString icon = c.isVoice() ? "🔊 " : "# ";
+                        QListWidgetItem *item = new QListWidgetItem(prefix + icon + c.name);
                         item->setData(Qt::UserRole, QString::number(c.id));
                         m_channelList->addItem(item);
                     }
@@ -444,6 +501,26 @@ void MainWindow::addMessage(const Message &message)
 {
     qDebug() << "addMessage called - Channel ID:" << message.channelId << "Selected:" << m_selectedChannelId;
     qDebug() << "Message content:" << message.content;
+
+    // Update DM last message ID for sorting
+    if (m_selectedGuildId == 0)
+    {
+        // Update the channel's last message ID in the client's data
+        QList<Channel> &dms = const_cast<QList<Channel> &>(m_client->getPrivateChannels());
+        for (Channel &dm : dms)
+        {
+            if (dm.id == message.channelId)
+            {
+                dm.lastMessageId = message.id;
+                // Refresh DM list to resort
+                if (m_selectedGuildId == 0)
+                {
+                    updateChannelList();
+                }
+                break;
+            }
+        }
+    }
 
     // Only add if it's for the current channel
     if (message.channelId != m_selectedChannelId)

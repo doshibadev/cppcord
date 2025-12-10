@@ -32,6 +32,7 @@ public:
     void getCurrentUser();
     void getChannelMessages(Snowflake channelId, int limit = 50);
     void getChannelMessagesBefore(Snowflake channelId, Snowflake beforeId, int limit = 50);
+    void sendMessage(Snowflake channelId, const QString &content);
 
     // Token management
     void setToken(const QString &token);
@@ -41,6 +42,10 @@ public:
     // Data Access
     const QList<Guild> &getGuilds() const { return m_guilds; }
     const QList<Channel> &getPrivateChannels() const { return m_privateChannels; }
+
+    // Icon management
+    void downloadGuildIcon(Snowflake guildId, const QString &iconHash);
+    QString getGuildIconUrl(Snowflake guildId, const QString &iconHash) const;
 
     // Permission checking
     bool canViewChannel(const Guild &guild, const Channel &channel) const;
@@ -58,6 +63,7 @@ signals:
     // Data signals
     void guildCreated(const Guild &guild);
     void channelCreated(const Channel &channel);
+    void guildIconLoaded(Snowflake guildId, const QPixmap &icon);
 
 private:
     QNetworkAccessManager *m_networkManager;
@@ -69,7 +75,8 @@ private:
     // State
     QList<Guild> m_guilds;
     QList<Channel> m_privateChannels;
-    User m_user; // Current user info
+    User m_user;
+    QMap<Snowflake, QPixmap> m_guildIcons; // Cache for guild icons // Current user info
 
     // Event handlers
     void handleGatewayEvent(const QString &eventName, const QJsonObject &data);
