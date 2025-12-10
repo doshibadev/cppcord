@@ -49,6 +49,7 @@ public:
 
     // Permission checking
     bool canViewChannel(const Guild &guild, const Channel &channel) const;
+    bool canSendMessages(const Guild &guild, const Channel &channel) const;
 
 signals:
     void loginSuccess();

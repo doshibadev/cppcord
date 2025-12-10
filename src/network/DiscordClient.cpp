@@ -484,6 +484,7 @@ void DiscordClient::handleGuildCreate(const QJsonObject &data)
     guild.name = data["name"].toString();
     guild.icon = data["icon"].toString();
     guild.ownerId = data["owner_id"].toString().toULongLong();
+    guild.joinedAt = data["joined_at"].toString();
 
     // Parse roles and their permissions
     QJsonArray rolesArray = data["roles"].toArray();
@@ -734,4 +735,80 @@ bool DiscordClient::canViewChannel(const Guild &guild, const Channel &channel) c
 
     // Check if user has VIEW_CHANNEL permission
     return (permissions & Permissions::VIEW_CHANNEL) != 0;
+}
+
+bool DiscordClient::canSendMessages(const Guild &guild, const Channel &channel) const
+{
+    // DM channels - always can send
+    if (channel.isDm())
+        return true;
+
+    // Voice channels - can't send text messages
+    if (channel.isVoice())
+        return false;
+
+    // If user is guild owner, they can send in all channels
+    if (guild.ownerId == m_user.id)
+        return true;
+
+    // Start with @everyone role base permissions
+    quint64 basePermissions = 0;
+    if (guild.roles.contains(guild.id))
+    {
+        basePermissions = guild.roles[guild.id].permissions;
+    }
+
+    // Apply user's role permissions
+    for (Snowflake roleId : guild.memberRoles)
+    {
+        if (guild.roles.contains(roleId))
+        {
+            const Role &role = guild.roles[roleId];
+
+            // If any role has ADMINISTRATOR, user can send everywhere
+            if (role.permissions & Permissions::ADMINISTRATOR)
+                return true;
+
+            basePermissions |= role.permissions;
+        }
+    }
+
+    // Start with base permissions
+    quint64 permissions = basePermissions;
+
+    // Apply @everyone channel overwrites
+    for (const PermissionOverwrite &overwrite : channel.permissionOverwrites)
+    {
+        if (overwrite.id == guild.id && overwrite.type == 0)
+        {
+            permissions &= ~overwrite.deny;
+            permissions |= overwrite.allow;
+        }
+    }
+
+    // Apply user's role channel overwrites
+    for (Snowflake roleId : guild.memberRoles)
+    {
+        for (const PermissionOverwrite &overwrite : channel.permissionOverwrites)
+        {
+            if (overwrite.id == roleId && overwrite.type == 0)
+            {
+                permissions &= ~overwrite.deny;
+                permissions |= overwrite.allow;
+            }
+        }
+    }
+
+    // Apply user-specific overwrites (highest priority)
+    for (const PermissionOverwrite &overwrite : channel.permissionOverwrites)
+    {
+        if (overwrite.id == m_user.id && overwrite.type == 1) // Member overwrite
+        {
+            permissions &= ~overwrite.deny;
+            permissions |= overwrite.allow;
+        }
+    }
+
+    // Check if user has SEND_MESSAGES permission
+    return (permissions & Permissions::SEND_MESSAGES) != 0;
 }

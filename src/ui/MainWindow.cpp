@@ -156,10 +156,14 @@ void MainWindow::connectSignals()
         QListWidgetItem *item = new QListWidgetItem(guild.name.left(2).toUpper());
         item->setData(Qt::UserRole, QVariant::fromValue(guild.id));
         item->setData(Qt::UserRole + 1, guild.name); // Store full name
+        item->setData(Qt::UserRole + 2, guild.joinedAt); // Store join time for sorting
         item->setToolTip(guild.name);
         item->setTextAlignment(Qt::AlignCenter);
         m_guildList->addItem(item);
-        qDebug() << "Added guild to UI:" << guild.name << "(ID:" << guild.id << ")"; });
+        qDebug() << "Added guild to UI:" << guild.name << "(ID:" << guild.id << ")";
+
+        // Sort guilds by join time (oldest first, which means newest at bottom)
+        sortGuildList(); });
 
     connect(m_client, &DiscordClient::channelCreated, [this](const Channel &channel)
             {
@@ -318,6 +322,74 @@ void MainWindow::onChannelSelected(QListWidgetItem *item)
         m_messageLog->clear();
         m_messageLog->setText("Loading messages...");
         m_client->getChannelMessages(m_selectedChannelId);
+
+        // Update message input permissions
+        updateMessageInputPermissions();
+    }
+}
+
+void MainWindow::sortGuildList()
+{
+    // Skip the first item (Home/DM button)
+    QList<QListWidgetItem *> items;
+    for (int i = 1; i < m_guildList->count(); ++i)
+    {
+        items.append(m_guildList->takeItem(1)); // Always take index 1 since items shift
+    }
+
+    // Sort by joinedAt timestamp (oldest first)
+    std::sort(items.begin(), items.end(), [](QListWidgetItem *a, QListWidgetItem *b)
+              {
+                  QString timeA = a->data(Qt::UserRole + 2).toString();
+                  QString timeB = b->data(Qt::UserRole + 2).toString();
+                  return timeA < timeB; // Oldest first (earliest timestamp)
+              });
+
+    // Re-add sorted items
+    for (QListWidgetItem *item : items)
+    {
+        m_guildList->addItem(item);
+    }
+}
+
+void MainWindow::updateMessageInputPermissions()
+{
+    // Find the current guild and channel
+    const QList<Guild> &guilds = m_client->getGuilds();
+
+    // DMs are always allowed
+    if (m_selectedGuildId == 0)
+    {
+        m_messageInput->setEnabled(true);
+        m_messageInput->setPlaceholderText("Message...");
+        return;
+    }
+
+    // Find guild and channel
+    for (const Guild &guild : guilds)
+    {
+        if (guild.id == m_selectedGuildId)
+        {
+            for (const Channel &channel : guild.channels)
+            {
+                if (channel.id == m_selectedChannelId)
+                {
+                    bool canSend = m_client->canSendMessages(guild, channel);
+                    m_messageInput->setEnabled(canSend);
+
+                    if (canSend)
+                    {
+                        m_messageInput->setPlaceholderText("Message #" + channel.name);
+                    }
+                    else
+                    {
+                        m_messageInput->setPlaceholderText("You do not have permission to send messages in this channel");
+                        m_messageInput->setStyleSheet("QLineEdit { color: #72767d; }");
+                    }
+                    return;
+                }
+            }
+        }
     }
 }
 
@@ -569,6 +641,19 @@ void MainWindow::addMessage(const Message &message)
 void MainWindow::displayMessages()
 {
     m_messageLog->clear();
+
+    if (m_currentMessages.isEmpty())
+    {
+        // Show empty state message
+        m_messageLog->setAlignment(Qt::AlignCenter);
+        QString emptyMessage = "<p style='color: #72767d; font-size: 18px; font-weight: bold; margin-top: 150px;'>"
+                               "This is the beginning of your conversation"
+                               "</p>";
+        m_messageLog->append(emptyMessage);
+        return;
+    }
+
+    m_messageLog->setAlignment(Qt::AlignLeft);
 
     for (const Message &msg : m_currentMessages)
     {

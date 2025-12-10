@@ -10,6 +10,7 @@ namespace Permissions
 {
     const quint64 VIEW_CHANNEL = 1ULL << 10;
     const quint64 READ_MESSAGE_HISTORY = 1ULL << 16;
+    const quint64 SEND_MESSAGES = 1ULL << 11;
     const quint64 ADMINISTRATOR = 1ULL << 3;
 }
 
@@ -27,6 +28,7 @@ struct Guild
     QString name;
     QString icon;
     Snowflake ownerId;
+    QString joinedAt;             // ISO 8601 timestamp when user joined
     QList<Snowflake> memberRoles; // Current user's roles in this guild
     QMap<Snowflake, Role> roles;  // All roles in the guild (roleId -> Role)
 

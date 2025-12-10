@@ -48,6 +48,8 @@ private:
 
     void updateGuildList();
     void updateChannelList();
+    void sortGuildList();
+    void updateMessageInputPermissions();
     void onGuildSelected(QListWidgetItem *item);
     void onChannelSelected(QListWidgetItem *item);
     void onScrollValueChanged(int value);
