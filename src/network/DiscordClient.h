@@ -30,7 +30,8 @@ public:
 
     // API methods
     void getCurrentUser();
-    void getChannelMessages(Snowflake channelId);
+    void getChannelMessages(Snowflake channelId, int limit = 50);
+    void getChannelMessagesBefore(Snowflake channelId, Snowflake beforeId, int limit = 50);
 
     // Token management
     void setToken(const QString &token);
@@ -51,8 +52,8 @@ signals:
     void tokenInvalidated();
     void userInfoReceived(const User &user);
     void apiError(const QString &error);
-    void messageReceived(const QString &message);
     void messagesLoaded(Snowflake channelId, const QList<Message> &messages);
+    void newMessage(const Message &message); // Live message from gateway
 
     // Data signals
     void guildCreated(const Guild &guild);

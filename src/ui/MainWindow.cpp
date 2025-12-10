@@ -8,7 +8,12 @@
 #include <QListWidget>
 
 MainWindow::MainWindow(QWidget *parent)
-    : QMainWindow(parent), m_client(new DiscordClient(this)), m_selectedGuildId(0), m_selectedChannelId(0)
+    : QMainWindow(parent),
+      m_client(new DiscordClient(this)),
+      m_selectedGuildId(0),
+      m_selectedChannelId(0),
+      m_isLoadingMessages(false),
+      m_hasMoreMessages(true)
 {
     setWindowTitle("CPPCord - Discord Client");
     resize(1200, 800);
@@ -76,12 +81,38 @@ void MainWindow::setupUI()
     // 3. Chat Area (Right)
     QWidget *chatPanel = new QWidget(m_centralWidget);
     QVBoxLayout *chatLayout = new QVBoxLayout(chatPanel);
+    chatLayout->setContentsMargins(0, 0, 0, 0);
+    chatLayout->setSpacing(0);
 
-    m_messageLog = new QTextEdit(chatPanel);
+    // Message display with scroll to bottom button
+    QWidget *messageContainer = new QWidget(chatPanel);
+    QVBoxLayout *messageContainerLayout = new QVBoxLayout(messageContainer);
+    messageContainerLayout->setContentsMargins(0, 0, 0, 0);
+    messageContainerLayout->setSpacing(0);
+
+    m_messageLog = new QTextEdit(messageContainer);
     m_messageLog->setReadOnly(true);
     m_messageLog->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOn);
     m_messageLog->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-    chatLayout->addWidget(m_messageLog);
+    messageContainerLayout->addWidget(m_messageLog);
+
+    // Scroll to bottom button (initially hidden)
+    m_scrollToBottomBtn = new QPushButton("↓ Jump to present", messageContainer);
+    m_scrollToBottomBtn->setStyleSheet(
+        "QPushButton { background-color: #5865F2; color: white; border-radius: 4px; padding: 8px 16px; }"
+        "QPushButton:hover { background-color: #4752C4; }");
+    m_scrollToBottomBtn->setFixedHeight(36);
+    m_scrollToBottomBtn->hide();
+
+    // Position button above message input
+    QHBoxLayout *btnLayout = new QHBoxLayout();
+    btnLayout->addStretch();
+    btnLayout->addWidget(m_scrollToBottomBtn);
+    btnLayout->addStretch();
+    btnLayout->setContentsMargins(10, 10, 10, 10);
+
+    messageContainerLayout->addLayout(btnLayout);
+    chatLayout->addWidget(messageContainer);
 
     m_messageInput = new QLineEdit(chatPanel);
     m_messageInput->setPlaceholderText("Message...");
@@ -99,6 +130,10 @@ void MainWindow::connectSignals()
 {
     connect(m_guildList, &QListWidget::itemClicked, this, &MainWindow::onGuildSelected);
     connect(m_channelList, &QListWidget::itemClicked, this, &MainWindow::onChannelSelected);
+    connect(m_scrollToBottomBtn, &QPushButton::clicked, this, &MainWindow::scrollToBottom);
+
+    // Scroll detection for loading more messages and showing/hiding scroll button
+    connect(m_messageLog->verticalScrollBar(), &QScrollBar::valueChanged, this, &MainWindow::onScrollValueChanged);
 
     connect(m_client, &DiscordClient::loginSuccess, [this]()
             {
@@ -123,21 +158,34 @@ void MainWindow::connectSignals()
 
     connect(m_client, &DiscordClient::messagesLoaded, [this](Snowflake channelId, const QList<Message> &messages)
             {
-        if (channelId != m_selectedChannelId) return; // Ignore if switched channel
+        if (channelId != m_selectedChannelId) return;
 
-        m_messageLog->clear();
+        m_isLoadingMessages = false;
+
+        // Add messages to our list (newer messages at the end)
         for (const Message &msg : messages) {
-            QString timestamp = msg.timestamp.toString("hh:mm AP");
-            m_messageLog->append(QString("[%1] %2: %3").arg(timestamp).arg(msg.author.username).arg(msg.content));
-        } });
+            // Check if message already exists
+            bool exists = false;
+            for (const Message &existing : m_currentMessages) {
+                if (existing.id == msg.id) {
+                    exists = true;
+                    break;
+                }
+            }
+            if (!exists) {
+                m_currentMessages.prepend(msg); // Add to beginning (older messages)
+            }
+        }
 
-    connect(m_client, &DiscordClient::messageReceived, [this](const QString &message)
-            {
-        m_messageLog->append(message);
-        // Auto-scroll to bottom
-        QTextCursor cursor = m_messageLog->textCursor();
-        cursor.movePosition(QTextCursor::End);
-        m_messageLog->setTextCursor(cursor); });
+        // Sort messages by ID (chronological order)
+        std::sort(m_currentMessages.begin(), m_currentMessages.end(),
+                  [](const Message &a, const Message &b) { return a.id < b.id; });
+
+        m_hasMoreMessages = messages.size() >= 50; // Discord returns 50 messages max
+        displayMessages();
+        scrollToBottom(); });
+
+    connect(m_client, &DiscordClient::newMessage, this, &MainWindow::addMessage);
 
     connect(m_client, &DiscordClient::apiError, [](const QString &error)
             { QMessageBox::warning(nullptr, "API Error", error); });
@@ -215,6 +263,11 @@ void MainWindow::onChannelSelected(QListWidgetItem *item)
 
     if (ok)
     {
+        // Reset message state for new channel
+        m_currentMessages.clear();
+        m_hasMoreMessages = true;
+        m_isLoadingMessages = false;
+
         m_messageLog->clear();
         m_messageLog->setText("Loading messages...");
         m_client->getChannelMessages(m_selectedChannelId);
@@ -320,4 +373,132 @@ void MainWindow::showLoginDialog()
 
     dialog->exec();
     dialog->deleteLater();
+}
+
+void MainWindow::onScrollValueChanged(int value)
+{
+    QScrollBar *scrollBar = m_messageLog->verticalScrollBar();
+
+    // Show/hide scroll to bottom button
+    bool atBottom = (value >= scrollBar->maximum() - 10);
+    m_scrollToBottomBtn->setVisible(!atBottom);
+
+    // Load more messages when scrolled to top
+    if (value == scrollBar->minimum() && m_hasMoreMessages && !m_isLoadingMessages && m_selectedChannelId != 0)
+    {
+        loadMoreMessages();
+    }
+}
+
+void MainWindow::loadMoreMessages()
+{
+    if (m_isLoadingMessages || !m_hasMoreMessages || m_selectedChannelId == 0)
+        return;
+
+    // Don't try to load more if we have no messages yet (initial load still pending)
+    if (m_currentMessages.isEmpty())
+    {
+        qDebug() << "No messages loaded yet, skipping pagination";
+        return;
+    }
+
+    m_isLoadingMessages = true;
+
+    // Get oldest message ID for pagination
+    Snowflake beforeId = m_currentMessages.first().id;
+
+    // Request messages before the oldest one we have
+    qDebug() << "Loading more messages before ID:" << beforeId;
+
+    // Save current scroll position to restore after loading
+    QScrollBar *scrollBar = m_messageLog->verticalScrollBar();
+    int oldValue = scrollBar->value();
+    int oldMax = scrollBar->maximum();
+
+    // Store these for later restoration in messagesLoaded handler
+    // For now, just call the API
+    m_client->getChannelMessagesBefore(m_selectedChannelId, beforeId);
+}
+
+void MainWindow::scrollToBottom()
+{
+    QScrollBar *scrollBar = m_messageLog->verticalScrollBar();
+    scrollBar->setValue(scrollBar->maximum());
+    m_scrollToBottomBtn->hide();
+
+    // Trim old messages when jumping to bottom
+    if (m_currentMessages.size() > 100)
+    {
+        // Keep only the last 100 messages
+        int toRemove = m_currentMessages.size() - 100;
+        m_currentMessages.erase(m_currentMessages.begin(), m_currentMessages.begin() + toRemove);
+        displayMessages();
+
+        // Scroll back to bottom after redisplay
+        QTimer::singleShot(50, this, [this, scrollBar]()
+                           { scrollBar->setValue(scrollBar->maximum()); });
+    }
+}
+
+void MainWindow::addMessage(const Message &message)
+{
+    qDebug() << "addMessage called - Channel ID:" << message.channelId << "Selected:" << m_selectedChannelId;
+    qDebug() << "Message content:" << message.content;
+
+    // Only add if it's for the current channel
+    if (message.channelId != m_selectedChannelId)
+    {
+        qDebug() << "Channel mismatch, ignoring message";
+        return;
+    }
+
+    // Check if message already exists
+    for (const Message &existing : m_currentMessages)
+    {
+        if (existing.id == message.id)
+        {
+            qDebug() << "Duplicate message, ignoring";
+            return;
+        }
+    }
+
+    qDebug() << "Adding message to list";
+    m_currentMessages.append(message);
+
+    // Keep only last 200 messages in memory to avoid bloat
+    if (m_currentMessages.size() > 200)
+    {
+        m_currentMessages.removeFirst();
+    }
+
+    // Check if user is at bottom before adding
+    QScrollBar *scrollBar = m_messageLog->verticalScrollBar();
+    bool wasAtBottom = (scrollBar->value() >= scrollBar->maximum() - 10);
+
+    // Add message to display
+    QString timestamp = message.timestamp.toString("hh:mm AP");
+    m_messageLog->append(QString("[%1] %2: %3")
+                             .arg(timestamp)
+                             .arg(message.author.username)
+                             .arg(message.content));
+
+    // Auto-scroll to bottom only if user was already at bottom
+    if (wasAtBottom)
+    {
+        scrollToBottom();
+    }
+}
+
+void MainWindow::displayMessages()
+{
+    m_messageLog->clear();
+
+    for (const Message &msg : m_currentMessages)
+    {
+        QString timestamp = msg.timestamp.toString("hh:mm AP");
+        m_messageLog->append(QString("[%1] %2: %3")
+                                 .arg(timestamp)
+                                 .arg(msg.author.username)
+                                 .arg(msg.content));
+    }
 }

@@ -12,7 +12,6 @@ DiscordClient::DiscordClient(QObject *parent)
     : QObject(parent), m_networkManager(new QNetworkAccessManager(this)), m_gateway(new GatewayClient(this)), m_fingerprint(generateFingerprint())
 {
     connect(m_gateway, &GatewayClient::eventReceived, this, &DiscordClient::handleGatewayEvent);
-    connect(m_gateway, &GatewayClient::messageReceived, this, &DiscordClient::messageReceived);
 }
 
 void DiscordClient::loginWithToken(const QString &token)
@@ -278,12 +277,12 @@ void DiscordClient::handleUserInfoResponse(QNetworkReply *reply)
     emit userInfoReceived(user);
 }
 
-void DiscordClient::getChannelMessages(Snowflake channelId)
+void DiscordClient::getChannelMessages(Snowflake channelId, int limit)
 {
     if (!isLoggedIn())
         return;
 
-    QNetworkRequest request = createRequest(QString("/api/v9/channels/%1/messages?limit=50").arg(channelId));
+    QNetworkRequest request = createRequest(QString("/api/v9/channels/%1/messages?limit=%2").arg(channelId).arg(limit));
     request.setRawHeader("Authorization", m_token.toUtf8());
 
     QNetworkReply *reply = m_networkManager->get(request);
@@ -291,6 +290,54 @@ void DiscordClient::getChannelMessages(Snowflake channelId)
             {
         if (reply->error() != QNetworkReply::NoError) {
             emit apiError("Failed to fetch messages: " + reply->errorString());
+            reply->deleteLater();
+            return;
+        }
+
+        QJsonDocument doc = QJsonDocument::fromJson(reply->readAll());
+        QJsonArray messagesArray = doc.array();
+        QList<Message> messages;
+
+        for (const QJsonValue &val : messagesArray) {
+            QJsonObject obj = val.toObject();
+            Message msg;
+            msg.id = obj["id"].toString().toULongLong();
+            msg.channelId = obj["channel_id"].toString().toULongLong();
+            msg.content = obj["content"].toString();
+            msg.timestamp = QDateTime::fromString(obj["timestamp"].toString(), Qt::ISODate);
+
+            QJsonObject authorObj = obj["author"].toObject();
+            msg.author.id = authorObj["id"].toString().toULongLong();
+            msg.author.username = authorObj["username"].toString();
+            msg.author.discriminator = authorObj["discriminator"].toString();
+            msg.author.avatar = authorObj["avatar"].toString();
+
+            messages.append(msg);
+        }
+
+        // API returns newest first, so reverse to show oldest at top in chat log
+        std::reverse(messages.begin(), messages.end());
+
+        emit messagesLoaded(channelId, messages);
+        reply->deleteLater(); });
+}
+
+void DiscordClient::getChannelMessagesBefore(Snowflake channelId, Snowflake beforeId, int limit)
+{
+    if (!isLoggedIn())
+        return;
+
+    QNetworkRequest request = createRequest(QString("/api/v9/channels/%1/messages?before=%2&limit=%3")
+                                                .arg(channelId)
+                                                .arg(beforeId)
+                                                .arg(limit));
+    request.setRawHeader("Authorization", m_token.toUtf8());
+
+    QNetworkReply *reply = m_networkManager->get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, channelId]()
+            {
+        if (reply->error() != QNetworkReply::NoError) {
+            emit apiError("Failed to fetch older messages: " + reply->errorString());
             reply->deleteLater();
             return;
         }
@@ -483,8 +530,26 @@ void DiscordClient::handleGuildCreate(const QJsonObject &data)
 
 void DiscordClient::handleMessageCreate(const QJsonObject &data)
 {
-    // For now we just use the existing messageReceived signal for the string log
-    // In future we parse Message object
+    Message message;
+    message.id = data["id"].toString().toULongLong();
+    message.channelId = data["channel_id"].toString().toULongLong();
+
+    if (data.contains("guild_id"))
+        message.guildId = data["guild_id"].toString().toULongLong();
+    else
+        message.guildId = 0;
+
+    QJsonObject authorObj = data["author"].toObject();
+    message.author.id = authorObj["id"].toString().toULongLong();
+    message.author.username = authorObj["username"].toString();
+    message.author.discriminator = authorObj["discriminator"].toString();
+    message.author.avatar = authorObj["avatar"].toString();
+    message.author.bot = authorObj["bot"].toBool(false);
+
+    message.content = data["content"].toString();
+    message.timestamp = QDateTime::fromString(data["timestamp"].toString(), Qt::ISODate);
+
+    emit newMessage(message);
 }
 
 bool DiscordClient::canViewChannel(const Guild &guild, const Channel &channel) const
