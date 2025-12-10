@@ -5,7 +5,9 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Find Qt
-set(CMAKE_PREFIX_PATH "C:/Qt/6.10.1/msvc2022_64")
+if(WIN32)
+    set(CMAKE_PREFIX_PATH "C:/Qt/6.10.1/msvc2022_64")
+endif()
 find_package(Qt6 REQUIRED COMPONENTS Core Widgets Network WebSockets Multimedia)
 
 set(CMAKE_AUTOMOC ON)
@@ -26,16 +28,21 @@ include_directories(
 set(SOURCES
     src/main.cpp
     src/network/DiscordClient.cpp
+    src/network/GatewayClient.cpp
     src/ui/LoginDialog.cpp
     src/ui/MainWindow.cpp
 )
 
 set(HEADERS
     src/network/DiscordClient.h
+    src/network/GatewayClient.h
     src/ui/LoginDialog.h
     src/ui/MainWindow.h
     src/models/User.h
     src/models/Snowflake.h
+    src/models/Guild.h
+    src/models/Channel.h
+    src/models/Message.h
 )
 
 add_executable(${PROJECT_NAME} ${SOURCES} ${HEADERS})

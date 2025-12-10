@@ -139,3 +139,7 @@ external/
 third_party/
 !external/README.md
 !third_party/README.md
+
+/opencodetmp
+
+AGENTS.md
