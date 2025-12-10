@@ -13,6 +13,7 @@
 #include "Channel.h"
 #include "Message.h"
 #include "GatewayClient.h"
+#include "utils/TokenStorage.h"
 
 class DiscordClient : public QObject
 {
@@ -24,6 +25,8 @@ public:
     // Auth methods
     void login(const QString &email, const QString &password);
     void submitMFA(const QString &code, const QString &ticket);
+    void loginWithToken(const QString &token);
+    void logout();
 
     // API methods
     void getCurrentUser();
@@ -42,6 +45,7 @@ signals:
     void loginSuccess();
     void mfaRequired(const QString &ticket);
     void loginError(const QString &error);
+    void tokenInvalidated();
     void userInfoReceived(const User &user);
     void apiError(const QString &error);
     void messageReceived(const QString &message);
@@ -56,6 +60,7 @@ private:
     GatewayClient *m_gateway;
     QString m_token;
     QString m_fingerprint;
+    TokenStorage m_tokenStorage;
 
     // State
     QList<Guild> m_guilds;

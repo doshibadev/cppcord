@@ -15,6 +15,31 @@ DiscordClient::DiscordClient(QObject *parent)
     connect(m_gateway, &GatewayClient::messageReceived, this, &DiscordClient::messageReceived);
 }
 
+void DiscordClient::loginWithToken(const QString &token)
+{
+    if (token.isEmpty())
+    {
+        qWarning() << "loginWithToken called with empty token";
+        emit loginError("Invalid token");
+        return;
+    }
+
+    qDebug() << "loginWithToken: Setting token and connecting to gateway";
+    m_token = token;
+    // Don't save again - token is already saved
+    emit loginSuccess();
+    m_gateway->connectToGateway(m_token);
+}
+
+void DiscordClient::logout()
+{
+    m_tokenStorage.clearToken();
+    m_token.clear();
+    m_gateway->disconnectFromGateway();
+    m_guilds.clear();
+    m_privateChannels.clear();
+}
+
 void DiscordClient::login(const QString &email, const QString &password)
 {
     QNetworkRequest request = createRequest("/api/v9/auth/login");
@@ -161,6 +186,7 @@ void DiscordClient::handleLoginResponse(QNetworkReply *reply)
     if (obj.contains("token"))
     {
         m_token = obj["token"].toString();
+        m_tokenStorage.saveToken(m_token);
         emit loginSuccess();
         m_gateway->connectToGateway(m_token);
     }
@@ -203,6 +229,7 @@ void DiscordClient::handleMFAResponse(QNetworkReply *reply)
     if (obj.contains("token"))
     {
         m_token = obj["token"].toString();
+        m_tokenStorage.saveToken(m_token);
         emit loginSuccess();
         m_gateway->connectToGateway(m_token);
     }
@@ -218,6 +245,16 @@ void DiscordClient::handleMFAResponse(QNetworkReply *reply)
 
 void DiscordClient::handleUserInfoResponse(QNetworkReply *reply)
 {
+    // Check for 401 Unauthorized - token is invalid
+    if (reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() == 401)
+    {
+        qDebug() << "Token is invalid or expired";
+        m_tokenStorage.clearToken();
+        m_token.clear();
+        emit tokenInvalidated();
+        return;
+    }
+
     if (reply->error() != QNetworkReply::NoError)
     {
         emit apiError("Failed to get user info: " + reply->errorString());
@@ -242,13 +279,15 @@ void DiscordClient::handleUserInfoResponse(QNetworkReply *reply)
 
 void DiscordClient::getChannelMessages(Snowflake channelId)
 {
-    if (!isLoggedIn()) return;
+    if (!isLoggedIn())
+        return;
 
     QNetworkRequest request = createRequest(QString("/api/v9/channels/%1/messages?limit=50").arg(channelId));
     request.setRawHeader("Authorization", m_token.toUtf8());
 
     QNetworkReply *reply = m_networkManager->get(request);
-    connect(reply, &QNetworkReply::finished, this, [this, reply, channelId]() {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, channelId]()
+            {
         if (reply->error() != QNetworkReply::NoError) {
             emit apiError("Failed to fetch messages: " + reply->errorString());
             reply->deleteLater();
@@ -266,22 +305,21 @@ void DiscordClient::getChannelMessages(Snowflake channelId)
             msg.channelId = obj["channel_id"].toString().toULongLong();
             msg.content = obj["content"].toString();
             msg.timestamp = QDateTime::fromString(obj["timestamp"].toString(), Qt::ISODate);
-            
+
             QJsonObject authorObj = obj["author"].toObject();
             msg.author.id = authorObj["id"].toString().toULongLong();
             msg.author.username = authorObj["username"].toString();
             msg.author.discriminator = authorObj["discriminator"].toString();
             msg.author.avatar = authorObj["avatar"].toString();
-            
+
             messages.append(msg);
         }
-        
+
         // API returns newest first, so reverse to show oldest at top in chat log
         std::reverse(messages.begin(), messages.end());
 
         emit messagesLoaded(channelId, messages);
-        reply->deleteLater();
-    });
+        reply->deleteLater(); });
 }
 
 void DiscordClient::handleGatewayEvent(const QString &eventName, const QJsonObject &data)
@@ -306,10 +344,6 @@ void DiscordClient::handleReady(const QJsonObject &data)
     m_privateChannels.clear();
     QJsonArray privateChannels = data["private_channels"].toArray();
 
-    // Note: DMs might also come as CHANNEL_CREATE later, but initial state is here (sometimes?)
-    // Actually for v9, DMs are usually lazy loaded or come via CHANNEL_CREATE events?
-    // In "READY" payload: "private_channels" - the private channels the user has opened.
-
     for (const QJsonValue &val : privateChannels)
     {
         QJsonObject channelObj = val.toObject();
@@ -317,8 +351,22 @@ void DiscordClient::handleReady(const QJsonObject &data)
         channel.id = channelObj["id"].toString().toULongLong();
         channel.type = channelObj["type"].toInt();
         channel.lastMessageId = channelObj["last_message_id"].toString().toULongLong();
-        channel.name = channelObj["name"].toString(); // Often null for DMs
-        // For DMs, we should parse recipients to generate a name, but for now simple
+        channel.name = channelObj["name"].toString();
+
+        // Parse recipients for DMs
+        QJsonArray recipients = channelObj["recipients"].toArray();
+        for (const QJsonValue &recipVal : recipients)
+        {
+            QJsonObject recipObj = recipVal.toObject();
+            User user;
+            user.id = recipObj["id"].toString().toULongLong();
+            user.username = recipObj["username"].toString();
+            user.discriminator = recipObj["discriminator"].toString();
+            user.avatar = recipObj["avatar"].toString();
+            user.bot = recipObj["bot"].toBool(false);
+            channel.recipients.append(user);
+        }
+
         m_privateChannels.append(channel);
         emit channelCreated(channel);
     }

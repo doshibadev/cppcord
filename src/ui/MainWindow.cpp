@@ -8,17 +8,14 @@
 #include <QListWidget>
 
 MainWindow::MainWindow(QWidget *parent)
-    : QMainWindow(parent)
-    , m_client(new DiscordClient(this))
-    , m_selectedGuildId(0)
-    , m_selectedChannelId(0)
+    : QMainWindow(parent), m_client(new DiscordClient(this)), m_selectedGuildId(0), m_selectedChannelId(0)
 {
     setWindowTitle("CPPCord - Discord Client");
     resize(1200, 800);
 
     setupUI();
     connectSignals();
-    
+
     // Show login dialog immediately if not logged in
     // Or let user click a button. For now, let's keep the button approach but maybe auto-show?
     // Let's stick to manual login trigger for now, but UI should look "empty"
@@ -39,28 +36,34 @@ void MainWindow::setupUI()
     m_guildList = new QListWidget(m_centralWidget);
     m_guildList->setFixedWidth(72); // Discord style narrow width
     m_guildList->setIconSize(QSize(48, 48));
+    m_guildList->setStyleSheet(
+        "QListWidget { background-color: #202225; border: none; }"
+        "QListWidget::item { padding: 8px; margin: 4px; border-radius: 24px; }"
+        "QListWidget::item:selected { background-color: #5865F2; }"
+        "QListWidget::item:hover { background-color: #5865F2; border-radius: 16px; }");
+
     // Add "Home" button
     QListWidgetItem *homeItem = new QListWidgetItem("DM");
     homeItem->setData(Qt::UserRole, 0); // ID 0 for Home
     homeItem->setTextAlignment(Qt::AlignCenter);
     m_guildList->addItem(homeItem);
-    
+
     mainLayout->addWidget(m_guildList);
 
     // 2. Channel/DM List (Middle)
     QWidget *channelPanel = new QWidget(m_centralWidget);
     channelPanel->setFixedWidth(240);
     QVBoxLayout *channelLayout = new QVBoxLayout(channelPanel);
-    
+
     m_currentTitle = new QLabel("Direct Messages", channelPanel);
     QFont titleFont = m_currentTitle->font();
     titleFont.setBold(true);
     m_currentTitle->setFont(titleFont);
     channelLayout->addWidget(m_currentTitle);
-    
+
     m_channelList = new QListWidget(channelPanel);
     channelLayout->addWidget(m_channelList);
-    
+
     // User info area at bottom of channel list
     QWidget *userInfoWidget = new QWidget(channelPanel);
     QHBoxLayout *userInfoLayout = new QHBoxLayout(userInfoWidget);
@@ -73,93 +76,144 @@ void MainWindow::setupUI()
     // 3. Chat Area (Right)
     QWidget *chatPanel = new QWidget(m_centralWidget);
     QVBoxLayout *chatLayout = new QVBoxLayout(chatPanel);
-    
+
     m_messageLog = new QTextEdit(chatPanel);
     m_messageLog->setReadOnly(true);
+    m_messageLog->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOn);
+    m_messageLog->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     chatLayout->addWidget(m_messageLog);
-    
+
     m_messageInput = new QLineEdit(chatPanel);
     m_messageInput->setPlaceholderText("Message...");
     chatLayout->addWidget(m_messageInput);
-    
+
     mainLayout->addWidget(chatPanel);
 
     setCentralWidget(m_centralWidget);
-    
-    // Add login button to menu or toolbar later. For now, trigger via menu?
-    // Or just pop up login if not logged in.
-    QTimer::singleShot(100, this, &MainWindow::showLoginDialog);
+
+    // Try auto-login after UI is set up
+    QTimer::singleShot(100, this, &MainWindow::tryAutoLogin);
 }
 
 void MainWindow::connectSignals()
 {
     connect(m_guildList, &QListWidget::itemClicked, this, &MainWindow::onGuildSelected);
     connect(m_channelList, &QListWidget::itemClicked, this, &MainWindow::onChannelSelected);
-    
-    connect(m_client, &DiscordClient::loginSuccess, [this]() {
-        // Clear lists or init state
-        updateGuildList();
-    });
 
-    connect(m_client, &DiscordClient::guildCreated, [this](const Guild &guild) {
+    connect(m_client, &DiscordClient::loginSuccess, [this]()
+            {
+        // Clear lists or init state
+        updateGuildList(); });
+
+    connect(m_client, &DiscordClient::guildCreated, [this](const Guild &guild)
+            {
         // Determine if we should update list
         // Yes, just add item
         QListWidgetItem *item = new QListWidgetItem(guild.name);
         item->setData(Qt::UserRole, QString::number(guild.id));
         item->setToolTip(guild.name);
-        m_guildList->addItem(item);
-    });
-    
-    connect(m_client, &DiscordClient::channelCreated, [this](const Channel &channel) {
+        m_guildList->addItem(item); });
+
+    connect(m_client, &DiscordClient::channelCreated, [this](const Channel &channel)
+            {
         if (m_selectedGuildId == 0 && channel.isDm()) {
             updateChannelList();
-        }
-    });
+        } });
 
-    connect(m_client, &DiscordClient::messagesLoaded, [this](Snowflake channelId, const QList<Message> &messages) {
+    connect(m_client, &DiscordClient::messagesLoaded, [this](Snowflake channelId, const QList<Message> &messages)
+            {
         if (channelId != m_selectedChannelId) return; // Ignore if switched channel
-        
+
         m_messageLog->clear();
         for (const Message &msg : messages) {
             QString timestamp = msg.timestamp.toString("hh:mm AP");
             m_messageLog->append(QString("[%1] %2: %3").arg(timestamp).arg(msg.author.username).arg(msg.content));
-        }
-    });
+        } });
 
-    connect(m_client, &DiscordClient::messageReceived, [this](const QString &message) {
+    connect(m_client, &DiscordClient::messageReceived, [this](const QString &message)
+            {
         m_messageLog->append(message);
-    });
+        // Auto-scroll to bottom
+        QTextCursor cursor = m_messageLog->textCursor();
+        cursor.movePosition(QTextCursor::End);
+        m_messageLog->setTextCursor(cursor); });
 
-    connect(m_client, &DiscordClient::apiError, [](const QString &error) {
-        QMessageBox::warning(nullptr, "API Error", error);
-    });
+    connect(m_client, &DiscordClient::apiError, [](const QString &error)
+            { QMessageBox::warning(nullptr, "API Error", error); });
+
+    connect(m_client, &DiscordClient::tokenInvalidated, this, &MainWindow::handleTokenInvalidated);
+}
+
+void MainWindow::tryAutoLogin()
+{
+    qDebug() << "tryAutoLogin: Checking for saved token...";
+
+    if (m_tokenStorage.hasToken())
+    {
+        qDebug() << "tryAutoLogin: Token found in storage";
+        QString token = m_tokenStorage.loadToken();
+
+        if (!token.isEmpty())
+        {
+            qDebug() << "tryAutoLogin: Loading saved token, length:" << token.length();
+            m_client->loginWithToken(token);
+            return;
+        }
+        else
+        {
+            qWarning() << "tryAutoLogin: Token loaded but is empty!";
+        }
+    }
+    else
+    {
+        qDebug() << "tryAutoLogin: No saved token found";
+    }
+
+    // No saved token, show login dialog
+    qDebug() << "tryAutoLogin: Showing login dialog";
+    showLoginDialog();
+}
+
+void MainWindow::handleTokenInvalidated()
+{
+    qDebug() << "Token invalidated, showing login dialog";
+    QMessageBox::information(this, "Session Expired",
+                             "Your session has expired. Please log in again.");
+    showLoginDialog();
 }
 
 void MainWindow::onGuildSelected(QListWidgetItem *item)
 {
-    if (!item) return;
+    if (!item)
+        return;
     bool ok;
     Snowflake guildId = item->data(Qt::UserRole).toULongLong(&ok);
-    if (!ok) guildId = 0; // "DM" item might set int 0
-    
+    if (!ok)
+        guildId = 0; // "DM" item might set int 0
+
     m_selectedGuildId = guildId;
-    
-    if (m_selectedGuildId == 0) {
+
+    if (m_selectedGuildId == 0)
+    {
         m_currentTitle->setText("Direct Messages");
-    } else {
+    }
+    else
+    {
         m_currentTitle->setText(item->text());
     }
-    
+
     updateChannelList();
 }
 
 void MainWindow::onChannelSelected(QListWidgetItem *item)
 {
-    if (!item) return;
+    if (!item)
+        return;
     bool ok;
     m_selectedChannelId = item->data(Qt::UserRole).toULongLong(&ok);
-    
-    if (ok) {
+
+    if (ok)
+    {
         m_messageLog->clear();
         m_messageLog->setText("Loading messages...");
         m_client->getChannelMessages(m_selectedChannelId);
@@ -175,32 +229,57 @@ void MainWindow::updateGuildList()
 void MainWindow::updateChannelList()
 {
     m_channelList->clear();
-    
-    if (m_selectedGuildId == 0) {
+
+    if (m_selectedGuildId == 0)
+    {
         // Show DMs
-        const QList<Channel>& dms = m_client->getPrivateChannels();
-        for (const Channel &dm : dms) {
+        const QList<Channel> &dms = m_client->getPrivateChannels();
+        for (const Channel &dm : dms)
+        {
             QString name = dm.name;
-            if (name.isEmpty()) name = "DM " + QString::number(dm.id); // Placeholder
-            
+
+            // Generate name from recipients if empty
+            if (name.isEmpty() && !dm.recipients.isEmpty())
+            {
+                QStringList names;
+                for (const User &recipient : dm.recipients)
+                {
+                    names.append(recipient.username);
+                }
+                name = names.join(", ");
+            }
+
+            if (name.isEmpty())
+            {
+                name = "Unknown DM";
+            }
+
             QListWidgetItem *item = new QListWidgetItem(name);
             item->setData(Qt::UserRole, QString::number(dm.id));
             m_channelList->addItem(item);
         }
-    } else {
+    }
+    else
+    {
         // Show Guild Channels
         // Find guild
-        const QList<Guild>& guilds = m_client->getGuilds();
-        for (const Guild &g : guilds) {
-            if (g.id == m_selectedGuildId) {
-                for (const Channel &c : g.channels) {
-                    if (c.type == 4) { // Category
+        const QList<Guild> &guilds = m_client->getGuilds();
+        for (const Guild &g : guilds)
+        {
+            if (g.id == m_selectedGuildId)
+            {
+                for (const Channel &c : g.channels)
+                {
+                    if (c.type == 4)
+                    { // Category
                         QListWidgetItem *item = new QListWidgetItem(c.name.toUpper());
                         item->setFlags(Qt::NoItemFlags); // Not selectable
                         // Styling for category
                         m_channelList->addItem(item);
-                    } else {
-                         // Indent if under category (not tracking parent yet)
+                    }
+                    else
+                    {
+                        // Indent if under category (not tracking parent yet)
                         QString icon = (c.type == 2) ? "🔊 " : "# ";
                         QListWidgetItem *item = new QListWidgetItem(icon + c.name);
                         item->setData(Qt::UserRole, QString::number(c.id));
@@ -217,22 +296,20 @@ void MainWindow::showLoginDialog()
 {
     LoginDialog *dialog = new LoginDialog(this);
 
-    connect(dialog, &LoginDialog::loginRequested, [this](const QString &email, const QString &password) {
-        m_client->login(email, password);
-    });
+    connect(dialog, &LoginDialog::loginRequested, [this](const QString &email, const QString &password)
+            { m_client->login(email, password); });
 
-    connect(dialog, &LoginDialog::mfaSubmitted, [this](const QString &code, const QString &ticket) {
-        m_client->submitMFA(code, ticket);
-    });
+    connect(dialog, &LoginDialog::mfaSubmitted, [this](const QString &code, const QString &ticket)
+            { m_client->submitMFA(code, ticket); });
 
     connect(m_client, &DiscordClient::mfaRequired, dialog, &LoginDialog::showMFAPrompt);
 
     connect(m_client, &DiscordClient::loginSuccess, dialog, &LoginDialog::accept);
 
-    connect(m_client, &DiscordClient::loginError, [dialog](const QString &error) {
+    connect(m_client, &DiscordClient::loginError, [dialog](const QString &error)
+            {
         dialog->showError(error);
-        dialog->resetAfterError();
-    });
+        dialog->resetAfterError(); });
 
     dialog->exec();
     dialog->deleteLater();

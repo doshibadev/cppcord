@@ -8,6 +8,7 @@
 #include <QTextEdit>
 #include "network/DiscordClient.h"
 #include "models/Snowflake.h"
+#include "utils/TokenStorage.h"
 
 class MainWindow : public QMainWindow
 {
@@ -19,6 +20,7 @@ public:
 
 private:
     DiscordClient *m_client;
+    TokenStorage m_tokenStorage;
 
     // UI Components
     QWidget *m_centralWidget;
@@ -35,6 +37,8 @@ private:
     void setupUI();
     void connectSignals();
     void showLoginDialog();
+    void tryAutoLogin();
+    void handleTokenInvalidated();
 
     void updateGuildList();
     void updateChannelList();

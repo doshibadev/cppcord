@@ -1,8 +1,11 @@
 #pragma once
 #include <QString>
+#include <QList>
 #include "Snowflake.h"
+#include "User.h"
 
-enum class ChannelType {
+enum class ChannelType
+{
     GUILD_TEXT = 0,
     DM = 1,
     GUILD_VOICE = 2,
@@ -12,7 +15,8 @@ enum class ChannelType {
     UNKNOWN = -1
 };
 
-struct Channel {
+struct Channel
+{
     Snowflake id;
     int type;
     Snowflake guildId; // 0 if DM
@@ -20,23 +24,27 @@ struct Channel {
     QString name;
     QString topic;
     Snowflake lastMessageId;
-    
+
     // For DMs
-    // QList<User> recipients; 
-    
-    bool isText() const {
+    QList<User> recipients;
+
+    bool isText() const
+    {
         return type == (int)ChannelType::GUILD_TEXT || type == (int)ChannelType::DM || type == (int)ChannelType::GROUP_DM;
     }
-    
-    bool isVoice() const {
+
+    bool isVoice() const
+    {
         return type == (int)ChannelType::GUILD_VOICE;
     }
-    
-    bool isCategory() const {
+
+    bool isCategory() const
+    {
         return type == (int)ChannelType::GUILD_CATEGORY;
     }
-    
-    bool isDm() const {
+
+    bool isDm() const
+    {
         return type == (int)ChannelType::DM || type == (int)ChannelType::GROUP_DM;
     }
 };
