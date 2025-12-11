@@ -1,0 +1,8 @@
+{
+  "name": "cppcord",
+  "version": "1.0.0",
+  "dependencies": [
+    "libsodium",
+    "opus"
+  ]
+}

@@ -1,4 +1,11 @@
 cmake_minimum_required(VERSION 3.16)
+
+# Set vcpkg toolchain before project()
+if(DEFINED ENV{VCPKG_ROOT} AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
+  set(CMAKE_TOOLCHAIN_FILE "$ENV{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
+      CACHE STRING "")
+endif()
+
 project(DiscordClient VERSION 0.2.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -6,9 +13,13 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Find Qt
 if(WIN32)
-    set(CMAKE_PREFIX_PATH "C:/Qt/6.10.1/msvc2022_64")
+    list(APPEND CMAKE_PREFIX_PATH "C:/Qt/6.10.1/msvc2022_64")
 endif()
 find_package(Qt6 REQUIRED COMPONENTS Core Widgets Network WebSockets Multimedia)
+
+# Find vcpkg libraries for voice chat
+find_package(Opus CONFIG REQUIRED)
+find_package(unofficial-sodium CONFIG REQUIRED)
 
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
@@ -55,6 +66,8 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     Qt6::Network
     Qt6::WebSockets
     Qt6::Multimedia
+    Opus::opus
+    unofficial-sodium::sodium
 )
 
 # Platform-specific libraries for secure storage
