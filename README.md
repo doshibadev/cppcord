@@ -75,12 +75,12 @@ The official Discord client is built with Electron, bundling an entire Chromium 
 |-----------|-----------|
 | **Language** | C++23 |
 | **GUI Framework** | Qt 6.10.1 (Widgets) |
-| **Build System** | CMake 3.16+ |
+| **Build System** | CMake 4.2.1 |
 | **Package Manager** | vcpkg |
 | **Networking** | Qt Network (REST), Qt WebSockets (Gateway) |
 | **Audio Codec** | Opus 1.5.2 |
 | **Encryption** | libsodium 1.0.20 |
-| **Compiler** | MSVC 2022 (Windows) / GCC 9+ (Linux) / Clang (macOS) |
+| **Compiler** | MSVC 2026 (Windows) / GCC 15.2 (Linux) / Clang 21.1.0 (macOS) |
 
 ### Qt Modules
 - **Qt Core** - Base framework and utilities
@@ -140,7 +140,7 @@ Ensure you have the following installed on your system:
 - **C++23 compatible compiler**:
   - Windows: Visual Studio 2022 (v17.x) or 2026 (v18.x) with MSVC
   - Linux: GCC 15+ or Clang 15+
-  - macOS: Xcode 15+ (includes Clang 15+)
+  - macOS: Xcode 15+ (includes Clang 21+)
 
 ### vcpkg Setup
 
