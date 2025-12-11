@@ -1,0 +1,14 @@
+<RCC>
+    <qresource prefix="/fonts">
+        <file>fonts/ggsans.ttf</file>
+        <file>fonts/ggsansbold.ttf</file>
+        <file>fonts/ggsansbolditalic.ttf</file>
+        <file>fonts/ggsansextrabold.ttf</file>
+        <file>fonts/ggsansextrabolditalic.ttf</file>
+        <file>fonts/ggsansitalic.ttf</file>
+        <file>fonts/ggsansmedium.ttf</file>
+        <file>fonts/ggsansmediumitalic.ttf</file>
+        <file>fonts/ggsanssemibold.ttf</file>
+        <file>fonts/ggsanssemibolditalic.ttf</file>
+    </qresource>
+</RCC>

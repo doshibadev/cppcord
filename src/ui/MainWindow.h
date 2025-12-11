@@ -8,6 +8,7 @@
 #include <QTextEdit>
 #include <QScrollBar>
 #include "network/DiscordClient.h"
+#include "audio/AudioManager.h"
 #include "models/Snowflake.h"
 #include "models/Message.h"
 #include "utils/TokenStorage.h"
@@ -23,6 +24,7 @@ public:
 private:
     DiscordClient *m_client;
     TokenStorage m_tokenStorage;
+    AudioManager *m_audioManager;
 
     // UI Components
     QWidget *m_centralWidget;
@@ -32,6 +34,11 @@ private:
     QLineEdit *m_messageInput;
     QLabel *m_currentTitle;
     QPushButton *m_scrollToBottomBtn;
+    QPushButton *m_logoutBtn;
+    QPushButton *m_settingsBtn;
+    QPushButton *m_muteBtn;
+    QPushButton *m_deafenBtn;
+    QLabel *m_usernameLabel;
 
     // State
     Snowflake m_selectedGuildId;
@@ -40,6 +47,12 @@ private:
     bool m_isLoadingMessages;
     bool m_hasMoreMessages;
     QMap<Snowflake, QPixmap> m_userAvatars; // Cache for user avatars
+
+    // Voice state
+    bool m_isInVoice;
+    bool m_isMuted;
+    bool m_isDeafened;
+    Snowflake m_currentVoiceChannelId;
 
     void setupUI();
     void connectSignals();
@@ -56,9 +69,20 @@ private:
     QString formatMessageHtml(const Message &msg, bool grouped = false);
     void onGuildSelected(QListWidgetItem *item);
     void onChannelSelected(QListWidgetItem *item);
+    void onChannelDoubleClicked(QListWidgetItem *item);
     void onScrollValueChanged(int value);
     void loadMoreMessages();
     void scrollToBottom();
     void addMessage(const Message &message);
     void displayMessages();
+
+    // Voice methods
+    void onVoiceReady();
+    void updateVoiceUI();
+    void onMuteToggled();
+    void onDeafenToggled();
+
+    // Logout
+    void onLogoutClicked();
+    void onSettingsClicked();
 };

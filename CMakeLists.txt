@@ -33,6 +33,7 @@ include_directories(
     src/network
     src/models
     src/utils
+    src/audio
 )
 
 # Source files
@@ -40,25 +41,39 @@ set(SOURCES
     src/main.cpp
     src/network/DiscordClient.cpp
     src/network/GatewayClient.cpp
+    src/network/VoiceClient.cpp
     src/ui/LoginDialog.cpp
     src/ui/MainWindow.cpp
+    src/ui/SettingsDialog.cpp
     src/utils/TokenStorage.cpp
+    src/audio/OpusCodec.cpp
+    src/audio/AudioManager.cpp
 )
 
 set(HEADERS
     src/network/DiscordClient.h
     src/network/GatewayClient.h
+    src/network/VoiceClient.h
     src/ui/LoginDialog.h
     src/ui/MainWindow.h
+    src/ui/SettingsDialog.h
     src/models/User.h
     src/models/Snowflake.h
     src/models/Guild.h
     src/models/Channel.h
     src/models/Message.h
+    src/models/VoiceState.h
+    src/audio/OpusCodec.h
+    src/audio/AudioManager.h
     src/utils/TokenStorage.h
 )
 
-add_executable(${PROJECT_NAME} ${SOURCES} ${HEADERS})
+# Add resources
+set(RESOURCES
+    resources/resources.qrc
+)
+
+add_executable(${PROJECT_NAME} ${SOURCES} ${HEADERS} ${RESOURCES})
 
 target_link_libraries(${PROJECT_NAME} PRIVATE
     Qt6::Core

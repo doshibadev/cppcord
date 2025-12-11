@@ -1,5 +1,7 @@
 #include "MainWindow.h"
 #include "LoginDialog.h"
+#include "SettingsDialog.h"
+#include "network/VoiceClient.h"
 #include <QHBoxLayout>
 #include <QVBoxLayout>
 #include <QWidget>
@@ -17,13 +19,24 @@
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent),
       m_client(new DiscordClient(this)),
+      m_audioManager(new AudioManager(this)),
       m_selectedGuildId(0),
       m_selectedChannelId(0),
       m_isLoadingMessages(false),
-      m_hasMoreMessages(true)
+      m_hasMoreMessages(true),
+      m_isInVoice(false),
+      m_isMuted(false),
+      m_isDeafened(false),
+      m_currentVoiceChannelId(0)
 {
     setWindowTitle("CPPCord - Discord Client");
     resize(1200, 800);
+
+    // Initialize audio manager
+    if (!m_audioManager->initialize())
+    {
+        qWarning() << "Failed to initialize audio manager";
+    }
 
     setupUI();
     connectSignals();
@@ -78,9 +91,54 @@ void MainWindow::setupUI()
 
     // User info area at bottom of channel list
     QWidget *userInfoWidget = new QWidget(channelPanel);
+    userInfoWidget->setFixedHeight(60);
+    userInfoWidget->setStyleSheet("QWidget { background-color: #292B2F; border-top: 1px solid #202225; }");
     QHBoxLayout *userInfoLayout = new QHBoxLayout(userInfoWidget);
-    // Add user info labels here later
-    // userInfoLayout->addWidget(new QLabel("User Info"));
+    userInfoLayout->setContentsMargins(8, 8, 8, 8);
+
+    m_usernameLabel = new QLabel("Not logged in", userInfoWidget);
+    m_usernameLabel->setStyleSheet("QLabel { color: #FFFFFF; font-weight: bold; }");
+    userInfoLayout->addWidget(m_usernameLabel);
+    userInfoLayout->addStretch();
+
+    // Voice control buttons
+    m_muteBtn = new QPushButton("🎤", userInfoWidget);
+    m_muteBtn->setCheckable(true);
+    m_muteBtn->setStyleSheet(
+        "QPushButton { background-color: #4E5058; color: white; border-radius: 4px; padding: 6px; font-size: 16px; }"
+        "QPushButton:hover { background-color: #5D6269; }"
+        "QPushButton:checked { background-color: #ED4245; }");
+    m_muteBtn->setFixedSize(32, 32);
+    m_muteBtn->setToolTip("Mute");
+    m_muteBtn->setEnabled(false);
+    userInfoLayout->addWidget(m_muteBtn);
+
+    m_deafenBtn = new QPushButton("🔊", userInfoWidget);
+    m_deafenBtn->setCheckable(true);
+    m_deafenBtn->setStyleSheet(
+        "QPushButton { background-color: #4E5058; color: white; border-radius: 4px; padding: 6px; font-size: 16px; }"
+        "QPushButton:hover { background-color: #5D6269; }"
+        "QPushButton:checked { background-color: #ED4245; }");
+    m_deafenBtn->setFixedSize(32, 32);
+    m_deafenBtn->setToolTip("Deafen");
+    m_deafenBtn->setEnabled(false);
+    userInfoLayout->addWidget(m_deafenBtn);
+
+    m_settingsBtn = new QPushButton("⚙", userInfoWidget);
+    m_settingsBtn->setStyleSheet(
+        "QPushButton { background-color: #4E5058; color: white; border-radius: 4px; padding: 6px 12px; font-size: 16px; }"
+        "QPushButton:hover { background-color: #5D6269; }");
+    m_settingsBtn->setFixedSize(32, 32);
+    m_settingsBtn->setToolTip("Settings");
+    userInfoLayout->addWidget(m_settingsBtn);
+
+    m_logoutBtn = new QPushButton("Logout", userInfoWidget);
+    m_logoutBtn->setStyleSheet(
+        "QPushButton { background-color: #ED4245; color: white; border-radius: 4px; padding: 6px 12px; font-weight: bold; }"
+        "QPushButton:hover { background-color: #C03537; }");
+    m_logoutBtn->setFixedHeight(32);
+    userInfoLayout->addWidget(m_logoutBtn);
+
     channelLayout->addWidget(userInfoWidget);
 
     mainLayout->addWidget(channelPanel);
@@ -124,7 +182,6 @@ void MainWindow::setupUI()
     m_messageInput = new QLineEdit(chatPanel);
     m_messageInput->setPlaceholderText("Message...");
     chatLayout->addWidget(m_messageInput);
-
     mainLayout->addWidget(chatPanel);
 
     setCentralWidget(m_centralWidget);
@@ -137,7 +194,21 @@ void MainWindow::connectSignals()
 {
     connect(m_guildList, &QListWidget::itemClicked, this, &MainWindow::onGuildSelected);
     connect(m_channelList, &QListWidget::itemClicked, this, &MainWindow::onChannelSelected);
+    connect(m_channelList, &QListWidget::itemDoubleClicked, this, &MainWindow::onChannelDoubleClicked);
     connect(m_scrollToBottomBtn, &QPushButton::clicked, this, &MainWindow::scrollToBottom);
+    connect(m_logoutBtn, &QPushButton::clicked, this, &MainWindow::onLogoutClicked);
+    connect(m_settingsBtn, &QPushButton::clicked, this, &MainWindow::onSettingsClicked);
+    connect(m_muteBtn, &QPushButton::clicked, this, &MainWindow::onMuteToggled);
+    connect(m_deafenBtn, &QPushButton::clicked, this, &MainWindow::onDeafenToggled);
+
+    // Voice client connections
+    connect(m_client->getVoiceClient(), &VoiceClient::ready, this, &MainWindow::onVoiceReady);
+
+    // Audio manager connections - send audio to voice client
+    connect(m_audioManager, &AudioManager::opusDataReady, m_client->getVoiceClient(), &VoiceClient::sendAudio);
+
+    // Voice client audio received - play it
+    connect(m_client->getVoiceClient(), &VoiceClient::audioDataReceived, m_audioManager, &AudioManager::addOpusData);
 
     // Scroll detection for loading more messages and showing/hiding scroll button
     connect(m_messageLog->verticalScrollBar(), &QScrollBar::valueChanged, this, &MainWindow::onScrollValueChanged);
@@ -152,6 +223,11 @@ void MainWindow::connectSignals()
 
     connect(m_client, &DiscordClient::loginSuccess, [this]()
             {
+        // Update username display
+        const User *user = m_client->currentUser();
+        if (user) {
+            m_usernameLabel->setText(user->username);
+        }
         // Clear lists or init state
         updateGuildList(); });
 
@@ -477,6 +553,16 @@ void MainWindow::updateChannelList()
                         QString icon = c.isVoice() ? "🔊 " : "# ";
                         QListWidgetItem *item = new QListWidgetItem(prefix + icon + c.name);
                         item->setData(Qt::UserRole, QString::number(c.id));
+
+                        // Highlight if this is the connected voice channel
+                        if (c.isVoice() && m_isInVoice && c.id == m_currentVoiceChannelId)
+                        {
+                            QFont font = item->font();
+                            font.setBold(true);
+                            item->setFont(font);
+                            item->setForeground(QColor(88, 101, 242)); // Discord blurple
+                        }
+
                         m_channelList->addItem(item);
                     }
                 }
@@ -576,9 +662,6 @@ void MainWindow::scrollToBottom()
 
 void MainWindow::addMessage(const Message &message)
 {
-    qDebug() << "addMessage called - Channel ID:" << message.channelId << "Selected:" << m_selectedChannelId;
-    qDebug() << "Message content:" << message.content;
-
     // Update DM last message ID for sorting
     if (m_selectedGuildId == 0)
     {
@@ -602,7 +685,6 @@ void MainWindow::addMessage(const Message &message)
     // Only add if it's for the current channel
     if (message.channelId != m_selectedChannelId)
     {
-        qDebug() << "Channel mismatch, ignoring message";
         return;
     }
 
@@ -611,12 +693,10 @@ void MainWindow::addMessage(const Message &message)
     {
         if (existing.id == message.id)
         {
-            qDebug() << "Duplicate message, ignoring";
             return;
         }
     }
 
-    qDebug() << "Adding message to list";
     m_currentMessages.append(message);
 
     // Keep only last 200 messages in memory to avoid bloat
@@ -834,4 +914,207 @@ void MainWindow::downloadUserAvatar(Snowflake userId, const QString &avatarHash)
             }
         }
         reply->deleteLater(); });
+}
+
+void MainWindow::onChannelDoubleClicked(QListWidgetItem *item)
+{
+    if (!item)
+        return;
+
+    Snowflake channelId = item->data(Qt::UserRole).value<Snowflake>();
+
+    // Find the channel to check if it's a voice channel
+    const QList<Channel> &channels = m_client->getChannels(m_selectedGuildId);
+    const Channel *voiceChannel = nullptr;
+
+    for (const Channel &channel : channels)
+    {
+        if (channel.id == channelId)
+        {
+            voiceChannel = &channel;
+            break;
+        }
+    }
+
+    // Only handle voice channels (type 2 = GUILD_VOICE)
+    if (!voiceChannel || voiceChannel->type != 2)
+        return;
+
+    // Toggle voice connection
+    if (m_isInVoice && m_currentVoiceChannelId == channelId)
+    {
+        // Already in this voice channel - disconnect
+        m_audioManager->stopCapture();
+        m_audioManager->stopPlayback();
+        m_client->leaveVoiceChannel(m_selectedGuildId);
+        m_isInVoice = false;
+        m_currentVoiceChannelId = 0;
+        qDebug() << "Left voice channel:" << voiceChannel->name;
+    }
+    else
+    {
+        // Not in this voice channel - join it
+        if (m_isInVoice)
+        {
+            // Leave current voice channel first
+            m_audioManager->stopCapture();
+            m_audioManager->stopPlayback();
+            m_client->leaveVoiceChannel(m_selectedGuildId);
+        }
+
+        m_client->joinVoiceChannel(m_selectedGuildId, channelId, m_isMuted, m_isDeafened);
+        m_currentVoiceChannelId = channelId;
+        m_isInVoice = true;
+        qDebug() << "Joined voice channel:" << voiceChannel->name;
+    }
+
+    updateChannelList(); // Refresh to show connection status
+}
+
+void MainWindow::onVoiceReady()
+{
+    qDebug() << "Voice connection ready, starting audio I/O";
+
+    // Start playback immediately
+    if (!m_isDeafened)
+    {
+        m_audioManager->startPlayback();
+    }
+
+    // Start capture if not muted
+    // Enable voice control buttons
+    m_muteBtn->setEnabled(true);
+    m_deafenBtn->setEnabled(true);
+    m_muteBtn->setChecked(m_isMuted);
+    m_deafenBtn->setChecked(m_isDeafened);
+
+    if (!m_isMuted && !m_isDeafened)
+    {
+        m_audioManager->startCapture();
+    }
+}
+
+void MainWindow::updateVoiceUI()
+{
+    // Update channel list to show voice connection status
+    updateChannelList();
+}
+
+void MainWindow::onMuteToggled()
+{
+    if (!m_isInVoice)
+        return;
+
+    m_isMuted = m_muteBtn->isChecked();
+    m_client->getVoiceClient()->setSelfMute(m_isMuted);
+
+    if (m_isMuted)
+    {
+        m_audioManager->stopCapture();
+        m_muteBtn->setToolTip("Unmute");
+    }
+    else
+    {
+        if (!m_isDeafened)
+        {
+            m_audioManager->startCapture();
+        }
+        m_muteBtn->setToolTip("Mute");
+    }
+}
+
+void MainWindow::onDeafenToggled()
+{
+    if (!m_isInVoice)
+        return;
+
+    m_isDeafened = m_deafenBtn->isChecked();
+    m_client->getVoiceClient()->setSelfDeaf(m_isDeafened);
+
+    if (m_isDeafened)
+    {
+        // Deafening also mutes
+        m_isMuted = true;
+        m_muteBtn->setChecked(true);
+        m_audioManager->stopCapture();
+        m_audioManager->stopPlayback();
+        m_deafenBtn->setToolTip("Undeafen");
+    }
+    else
+    {
+        m_audioManager->startPlayback();
+        // Don't automatically unmute when undeafening
+        m_deafenBtn->setToolTip("Deafen");
+    }
+}
+
+void MainWindow::onLogoutClicked()
+{
+    // Confirm logout
+    QMessageBox::StandardButton reply = QMessageBox::question(
+        this,
+        "Logout",
+        "Are you sure you want to logout?",
+        QMessageBox::Yes | QMessageBox::No);
+
+    if (reply != QMessageBox::Yes)
+        return;
+
+    // Disconnect from voice if connected
+    if (m_isInVoice)
+    {
+        m_audioManager->stopCapture();
+        m_audioManager->stopPlayback();
+        m_client->leaveVoiceChannel(m_selectedGuildId);
+        m_isInVoice = false;
+        m_currentVoiceChannelId = 0;
+        m_isMuted = false;
+        m_isDeafened = false;
+    }
+
+    // Disable and reset voice control buttons
+    m_muteBtn->setEnabled(false);
+    m_muteBtn->setChecked(false);
+    m_muteBtn->setToolTip("Mute");
+    m_deafenBtn->setEnabled(false);
+    m_deafenBtn->setChecked(false);
+    m_deafenBtn->setToolTip("Deafen");
+
+    // Clear token
+    m_tokenStorage.clearToken();
+
+    // Clear UI state
+    m_guildList->clear();
+    m_channelList->clear();
+    m_messageLog->clear();
+    m_messageInput->clear();
+    m_currentMessages.clear();
+    m_selectedGuildId = 0;
+    m_selectedChannelId = 0;
+    m_usernameLabel->setText("Not logged in");
+
+    // Re-add Home button to guild list
+    QListWidgetItem *homeItem = new QListWidgetItem("DM");
+    homeItem->setData(Qt::UserRole, 0);
+    homeItem->setTextAlignment(Qt::AlignCenter);
+    m_guildList->addItem(homeItem);
+
+    // Show login dialog
+    showLoginDialog();
+}
+
+void MainWindow::onSettingsClicked()
+{
+    SettingsDialog settingsDialog(this);
+
+    if (settingsDialog.exec() == QDialog::Accepted)
+    {
+        QString inputDevice = settingsDialog.getSelectedInputDevice();
+        QString outputDevice = settingsDialog.getSelectedOutputDevice();
+
+        qDebug() << "Audio settings saved - Input:" << inputDevice << "Output:" << outputDevice;
+
+        // TODO: Apply device changes to AudioManager
+        // For now, just log the selection
+    }
 }

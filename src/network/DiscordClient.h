@@ -42,6 +42,14 @@ public:
     // Data Access
     const QList<Guild> &getGuilds() const { return m_guilds; }
     const QList<Channel> &getPrivateChannels() const { return m_privateChannels; }
+    const QList<Channel> &getChannels(Snowflake guildId) const;
+    const User *currentUser() const { return m_user.id != 0 ? &m_user : nullptr; }
+    Snowflake getUserId() const { return m_user.id; }
+
+    // Voice
+    class VoiceClient *getVoiceClient() const { return m_gateway->getVoiceClient(); }
+    void joinVoiceChannel(Snowflake guildId, Snowflake channelId, bool mute = false, bool deaf = false);
+    void leaveVoiceChannel(Snowflake guildId);
 
     // Icon management
     void downloadGuildIcon(Snowflake guildId, const QString &iconHash);

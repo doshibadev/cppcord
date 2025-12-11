@@ -13,6 +13,7 @@ DiscordClient::DiscordClient(QObject *parent)
     : QObject(parent), m_networkManager(new QNetworkAccessManager(this)), m_gateway(new GatewayClient(this)), m_fingerprint(generateFingerprint())
 {
     connect(m_gateway, &GatewayClient::eventReceived, this, &DiscordClient::handleGatewayEvent);
+    m_gateway->setDiscordClient(this);
 }
 
 void DiscordClient::loginWithToken(const QString &token)
@@ -399,7 +400,11 @@ void DiscordClient::sendMessage(Snowflake channelId, const QString &content)
 
 void DiscordClient::handleGatewayEvent(const QString &eventName, const QJsonObject &data)
 {
-    qDebug() << "Gateway Event:" << eventName;
+    // Only log important events
+    if (eventName == "READY" || eventName == "VOICE_SERVER_UPDATE" || eventName == "VOICE_STATE_UPDATE")
+    {
+        qDebug() << "Gateway Event:" << eventName;
+    }
 
     if (eventName == "READY")
     {
@@ -597,6 +602,30 @@ void DiscordClient::handleGuildCreate(const QJsonObject &data)
     {
         downloadGuildIcon(guild.id, guild.icon);
     }
+}
+
+const QList<Channel> &DiscordClient::getChannels(Snowflake guildId) const
+{
+    for (const Guild &guild : m_guilds)
+    {
+        if (guild.id == guildId)
+        {
+            return guild.channels;
+        }
+    }
+
+    static QList<Channel> empty;
+    return empty;
+}
+
+void DiscordClient::joinVoiceChannel(Snowflake guildId, Snowflake channelId, bool mute, bool deaf)
+{
+    m_gateway->joinVoiceChannel(guildId, channelId, mute, deaf);
+}
+
+void DiscordClient::leaveVoiceChannel(Snowflake guildId)
+{
+    m_gateway->leaveVoiceChannel(guildId);
 }
 
 QString DiscordClient::getGuildIconUrl(Snowflake guildId, const QString &iconHash) const
