@@ -57,10 +57,14 @@ The official Discord client is built with Electron, bundling an entire Chromium 
 - Direct message support with recent activity sorting
 - Guild icon downloading from Discord CDN
 
-### Voice Chat (In Development)
-- Opus audio codec integration (v1.5.2)
-- libsodium encryption support (v1.0.20)
-- Voice channel infrastructure ready
+### Voice Chat
+- Full voice chat implementation with real-time audio streaming
+- Opus audio codec integration (v1.5.2) for encoding/decoding
+- libsodium encryption (v1.0.20) with AEAD AES256-GCM support
+- Discord voice gateway connection and UDP RTP transport
+- Bidirectional audio: microphone input and speaker output
+- Support for Discord's rtpsize encryption modes
+- Proper RTP header parsing and extension handling
 
 ### User Interface
 - Native Qt Widgets-based interface
@@ -108,9 +112,11 @@ The official Discord client is built with Electron, bundling an entire Chromium 
 - [x] Direct message support
 - [x] DM sorting by recent activity
 - [x] Voice library integration (Opus, libsodium)
+- [x] Voice channel connection and audio streaming
+- [x] Full bidirectional voice chat (input/output)
+- [x] AEAD AES256-GCM encryption for voice
 
 ### In Progress
-- [ ] Voice channel connection and audio streaming
 - [ ] Voice UI (mute/deafen controls, speaking indicators)
 
 ### Planned Features

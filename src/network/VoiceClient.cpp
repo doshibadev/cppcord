@@ -9,8 +9,9 @@
 #include <cstring>
 #include "../audio/OpusCodec.h"
 
-// Helper function to get RTP header size (including CSRC and extensions for rtpsize modes)
-static int getRtpHeaderSize(const QByteArray &packet)
+// Helper function to get RTP header size for AAD (Additional Authenticated Data)
+// For rtpsize modes: includes base header + CSRCs + extension header (NOT extension data)
+static int getRtpHeaderSizeForAAD(const QByteArray &packet)
 {
     if (packet.size() < 12)
     {
@@ -25,14 +26,10 @@ static int getRtpHeaderSize(const QByteArray &packet)
     int headerSize = 12;  // Basic RTP header
     headerSize += cc * 4; // CSRC identifiers (4 bytes each)
 
-    // Check if we have enough data for extension
+    // For rtpsize modes: extension HEADER (4 bytes) is part of AAD, but extension DATA is encrypted
     if (hasExtension && packet.size() >= headerSize + 4)
     {
-        // Extension header: 2 bytes profile + 2 bytes length
-        quint16 extensionLength = qFromBigEndian<quint16>(
-            reinterpret_cast<const uchar *>(packet.constData() + headerSize + 2));
-        headerSize += 4;                   // Extension header
-        headerSize += extensionLength * 4; // Extension data (length is in 32-bit words)
+        headerSize += 4; // Extension header only (profile + length)
     }
 
     return headerSize;
@@ -637,85 +634,148 @@ QByteArray VoiceClient::encryptAudio(const QByteArray &opus, quint16 sequence, q
 QByteArray VoiceClient::decryptAudio(const QByteArray &encrypted)
 {
     if (m_secretKey.isEmpty() || m_selectedMode.isEmpty())
-        return {};
-
-    if (encrypted.size() < 12 + 16)
-        return {}; // header + tag
-
-    const bool isAes = (m_selectedMode == "aead_aes256_gcm_rtpsize");
-    const bool isXCha = (m_selectedMode == "aead_xchacha20_poly1305_rtpsize");
-
-    // Always use ONLY the base 12-byte RTP header as AAD
-    QByteArray header = encrypted.left(12);
-
-    // For both rtpsize modes, packets end with a 4-byte nonce counter (unused by AES-GCM)
-    // Remove that suffix BEFORE determining ciphertext/tag
-    QByteArray packet = encrypted;
-    if (packet.size() > 12 + 16 + 4)
-        packet.chop(4);
-
-    if (packet.size() < 12 + 16)
-        return {};
-
-    QByteArray ciphertext = packet.mid(12, packet.size() - 12 - 16);
-    QByteArray tag = packet.right(16);
-
-    QByteArray combined = ciphertext + tag;
-
-    if (isAes)
     {
-        // AES-GCM: nonce = 12-byte RTP header
-        unsigned char nonce[12];
-        memcpy(nonce, header.constData(), 12);
+        qWarning() << "Cannot decrypt: secret key or mode not set";
+        return QByteArray();
+    }
 
-        QByteArray out(ciphertext.size(), 0);
-        unsigned long long outLen = 0;
+    if (encrypted.size() < 12)
+    {
+        qWarning() << "Encrypted data too small (missing RTP header)";
+        return QByteArray();
+    }
+
+    // Calculate RTP header size for AAD (excludes extension data)
+    int rtpHeaderSize = getRtpHeaderSizeForAAD(encrypted);
+
+    // For rtpsize modes: the RTP header (base + CSRCs + extension header) is AAD
+    // Extension DATA and Opus payload are encrypted together
+    QByteArray rtpHeader = encrypted.left(rtpHeaderSize);
+
+    // Packet structure: [RTP header with extensions][encrypted data + tag][4-byte nonce]
+    if (encrypted.size() < rtpHeaderSize + 16 + 4)
+    {
+        qWarning() << "Packet too small for rtpsize mode";
+        return QByteArray();
+    }
+
+    // Extract 4-byte nonce from end of packet
+    QByteArray nonceBytes = encrypted.right(4);
+
+    // Ciphertext + tag (everything between header and nonce suffix)
+    QByteArray ciphertext = encrypted.mid(rtpHeaderSize, encrypted.size() - rtpHeaderSize - 4);
+
+    qDebug() << "Decrypting - Header size:" << rtpHeaderSize
+             << "Ciphertext+tag size:" << ciphertext.size()
+             << "Total packet:" << encrypted.size();
+
+    QByteArray decrypted;
+
+    if (m_selectedMode == "aead_aes256_gcm_rtpsize")
+    {
+        // AES-GCM nonce: 12 bytes with nonce counter copied as-is
+        unsigned char nonce[12];
+        std::memset(nonce, 0, 12);
+        std::memcpy(nonce, nonceBytes.constData(), 4);
+
+        if (ciphertext.size() < crypto_aead_aes256gcm_ABYTES)
+        {
+            qWarning() << "Ciphertext too small for AES-GCM";
+            return QByteArray();
+        }
+
+        QByteArray plaintext(ciphertext.size() - crypto_aead_aes256gcm_ABYTES, 0);
+        unsigned long long plaintext_len;
 
         if (crypto_aead_aes256gcm_decrypt(
-                reinterpret_cast<unsigned char *>(out.data()),
-                &outLen,
+                reinterpret_cast<unsigned char *>(plaintext.data()),
+                &plaintext_len,
                 nullptr,
-                reinterpret_cast<const unsigned char *>(combined.constData()),
-                combined.size(),
-                reinterpret_cast<const unsigned char *>(header.constData()),
-                header.size(),
+                reinterpret_cast<const unsigned char *>(ciphertext.constData()),
+                ciphertext.size(),
+                reinterpret_cast<const unsigned char *>(rtpHeader.constData()),
+                rtpHeader.size(),
                 nonce,
                 reinterpret_cast<const unsigned char *>(m_secretKey.constData())) != 0)
         {
-            return {};
+            qWarning() << "AES-GCM decryption failed";
+            return QByteArray();
         }
 
-        out.resize(outLen);
-        return out;
+        plaintext.resize(static_cast<int>(plaintext_len));
+        decrypted = plaintext;
     }
-
-    if (isXCha)
+    else if (m_selectedMode == "aead_xchacha20_poly1305_rtpsize")
     {
-        // XChaCha20-Poly1305: nonce = RTP header (12 bytes) + 12 zero bytes
+        // XChaCha20 nonce: 24 bytes with nonce counter copied as-is
         unsigned char nonce[24];
-        memcpy(nonce, header.constData(), 12);
-        memset(nonce + 12, 0, 12);
+        std::memset(nonce, 0, 24);
+        std::memcpy(nonce, nonceBytes.constData(), 4);
 
-        QByteArray out(ciphertext.size(), 0);
-        unsigned long long outLen = 0;
+        if (ciphertext.size() < crypto_aead_xchacha20poly1305_ietf_ABYTES)
+        {
+            qWarning() << "Ciphertext too small for XChaCha20-Poly1305";
+            return QByteArray();
+        }
+
+        QByteArray plaintext(ciphertext.size() - crypto_aead_xchacha20poly1305_ietf_ABYTES, 0);
+        unsigned long long plaintext_len;
 
         if (crypto_aead_xchacha20poly1305_ietf_decrypt(
-                reinterpret_cast<unsigned char *>(out.data()),
-                &outLen,
+                reinterpret_cast<unsigned char *>(plaintext.data()),
+                &plaintext_len,
                 nullptr,
-                reinterpret_cast<const unsigned char *>(combined.constData()),
-                combined.size(),
-                reinterpret_cast<const unsigned char *>(header.constData()),
-                header.size(),
+                reinterpret_cast<const unsigned char *>(ciphertext.constData()),
+                ciphertext.size(),
+                reinterpret_cast<const unsigned char *>(rtpHeader.constData()),
+                rtpHeader.size(),
                 nonce,
                 reinterpret_cast<const unsigned char *>(m_secretKey.constData())) != 0)
         {
-            return {};
+            qWarning() << "XChaCha20-Poly1305 decryption failed";
+            return QByteArray();
         }
 
-        out.resize(outLen);
-        return out;
+        plaintext.resize(static_cast<int>(plaintext_len));
+        decrypted = plaintext;
+    }
+    else
+    {
+        qWarning() << "Unsupported encryption mode:" << m_selectedMode;
+        return QByteArray();
     }
 
-    return {};
+    qDebug() << "Successfully decrypted" << decrypted.size() << "bytes";
+
+    // Strip RTP extension DATA from the decrypted payload if present
+    // The extension HEADER is in AAD, but extension DATA is encrypted
+    if (encrypted.size() >= 12)
+    {
+        quint8 byte0 = static_cast<quint8>(encrypted[0]);
+        quint8 cc = byte0 & 0x0F;
+        bool hasExtension = (byte0 & 0x10) != 0;
+
+        if (hasExtension)
+        {
+            int baseHeaderSize = 12 + (cc * 4);
+
+            // Read extension length from the original RTP header (in AAD)
+            if (encrypted.size() >= baseHeaderSize + 4)
+            {
+                quint16 extensionLength = qFromBigEndian<quint16>(
+                    reinterpret_cast<const uchar *>(encrypted.constData() + baseHeaderSize + 2));
+
+                int extensionDataSize = extensionLength * 4; // Length is in 32-bit words
+
+                if (decrypted.size() >= extensionDataSize)
+                {
+                    // Skip the extension data, return only Opus payload
+                    decrypted = decrypted.mid(extensionDataSize);
+                    qDebug() << "Stripped" << extensionDataSize << "bytes of RTP extension data, Opus payload:" << decrypted.size() << "bytes";
+                }
+            }
+        }
+    }
+
+    return decrypted;
 }
