@@ -141,12 +141,12 @@ Ensure you have the following installed on your system:
 - **Qt 6.10.1+**
   - Download from [qt.io](https://www.qt.io/download-qt-installer)
   - Required modules: Core, Widgets, Network, WebSockets, Multimedia
-- **CMake 3.16+**
+- **CMake 4.2.1+**
 - **vcpkg** (package manager for C++ libraries)
 - **C++23 compatible compiler**:
   - Windows: Visual Studio 2022 (v17.x) or 2026 (v18.x) with MSVC
-  - Linux: GCC 15+ or Clang 15+
-  - macOS: Xcode 15+ (includes Clang 21+)
+  - Linux: GCC 15.2+ or Clang 21.1.O+
+  - macOS: Xcode 26.2+ (includes Clang 21.1.0+)
 
 ### vcpkg Setup
 
