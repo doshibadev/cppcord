@@ -2,6 +2,7 @@
 #include "LoginDialog.h"
 #include "SettingsDialog.h"
 #include "network/VoiceClient.h"
+#include "utils/DiscordMarkdown.h"
 #include <QHBoxLayout>
 #include <QVBoxLayout>
 #include <QWidget>
@@ -21,6 +22,7 @@ MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent),
       m_client(new DiscordClient(this)),
       m_audioManager(new AudioManager(this)),
+      m_avatarCache(new AvatarCache(300, this)),
       m_selectedGuildId(0),
       m_selectedChannelId(0),
       m_isLoadingMessages(false),
@@ -250,6 +252,26 @@ void MainWindow::connectSignals()
     // Voice client audio received - play it
     connect(m_client->getVoiceClient(), &VoiceClient::audioDataReceived, m_audioManager, &AudioManager::addOpusData);
 
+    // Avatar cache connections - refresh display when avatars load
+    connect(m_avatarCache, &AvatarCache::avatarReady, this, [this](Snowflake userId)
+            {
+        // Check if the avatar is for someone in the current channel
+        bool needsRefresh = false;
+        for (const Message &msg : m_currentMessages)
+        {
+            if (msg.author.id == userId)
+            {
+                needsRefresh = true;
+                break;
+            }
+        }
+
+        if (needsRefresh)
+        {
+            // Refresh the display to show the new avatar
+            displayMessages();
+        } });
+
     // Scroll detection for loading more messages and showing/hiding scroll button
     connect(m_messageLog->verticalScrollBar(), &QScrollBar::valueChanged, this, &MainWindow::onScrollValueChanged);
 
@@ -447,6 +469,62 @@ void MainWindow::onChannelSelected(QListWidgetItem *item)
 
         // Update message input permissions
         updateMessageInputPermissions();
+
+        // Check if this channel has an active call and update UI state accordingly
+        if (m_selectedGuildId == 0) // DM channel
+        {
+            const QList<Channel> &privateChannels = m_client->getPrivateChannels();
+            for (const Channel &channel : privateChannels)
+            {
+                if (channel.id == m_selectedChannelId)
+                {
+                    if (channel.hasActiveCall)
+                    {
+                        qDebug() << "Channel has active call. Ringing:" << channel.callRingingUsers.size()
+                                 << "Participants:" << channel.callParticipants.size();
+
+                        // Check if we are being rung
+                        Snowflake myUserId = m_client->getUserId();
+                        bool weAreBeingRung = channel.callRingingUsers.contains(myUserId);
+                        bool weAreInCall = channel.callParticipants.contains(myUserId);
+
+                        if (weAreBeingRung)
+                        {
+                            qDebug() << "We are being rung! Incoming call...";
+                            // Don't auto-join, but show the call exists
+                            m_isInCall = false; // We're not in the call yet
+                            m_currentCallChannelId = channel.id;
+                        }
+                        else if (weAreInCall)
+                        {
+                            qDebug() << "We are already in this call";
+                            m_isInCall = true;
+                            m_isInVoice = true;
+                            m_currentCallChannelId = channel.id;
+                            m_currentVoiceChannelId = channel.id;
+                        }
+                        else
+                        {
+                            // Call exists but we're not involved
+                            qDebug() << "Call exists but we're not involved";
+                            m_isInCall = false;
+                        }
+                    }
+                    else
+                    {
+                        // No active call in this channel
+                        if (m_currentCallChannelId == channel.id)
+                        {
+                            // We were in this call but it ended
+                            m_isInCall = false;
+                            m_isRinging = false;
+                            m_currentCallChannelId = 0;
+                        }
+                    }
+                    break;
+                }
+            }
+        }
 
         // Update call button visibility/state
         updateCallButton();
@@ -753,10 +831,10 @@ void MainWindow::addMessage(const Message &message)
     QScrollBar *scrollBar = m_messageLog->verticalScrollBar();
     bool wasAtBottom = (scrollBar->value() >= scrollBar->maximum() - 10);
 
-    // Download avatar if not cached
-    if (!m_userAvatars.contains(message.author.id) && !message.author.avatar.isEmpty())
+    // Request avatar (will be loaded async if not cached)
+    if (!message.author.avatar.isEmpty())
     {
-        downloadUserAvatar(message.author.id, message.author.avatar);
+        m_avatarCache->getAvatar(message.author.id, message.author.avatar);
     }
 
     // Add message to display
@@ -771,6 +849,10 @@ void MainWindow::addMessage(const Message &message)
 
 void MainWindow::displayMessages()
 {
+    // Temporarily block scroll signals to prevent auto-loading while rendering
+    QScrollBar *scrollBar = m_messageLog->verticalScrollBar();
+    bool wasBlocked = scrollBar->blockSignals(true);
+
     m_messageLog->clear();
 
     if (m_currentMessages.isEmpty())
@@ -781,10 +863,15 @@ void MainWindow::displayMessages()
                                "This is the beginning of your conversation"
                                "</p>";
         m_messageLog->append(emptyMessage);
+        scrollBar->blockSignals(wasBlocked);
         return;
     }
 
     m_messageLog->setAlignment(Qt::AlignLeft);
+
+    // Build all HTML in one go, then append once to prevent UI blocking
+    // Appending to QTextEdit hundreds of times is extremely slow
+    QString allHtml;
 
     QDate lastDate;
     Snowflake lastAuthorId = 0;
@@ -793,12 +880,6 @@ void MainWindow::displayMessages()
     for (int i = 0; i < m_currentMessages.size(); ++i)
     {
         const Message &msg = m_currentMessages[i];
-
-        // Download avatar if not cached
-        if (!m_userAvatars.contains(msg.author.id) && !msg.author.avatar.isEmpty())
-        {
-            downloadUserAvatar(msg.author.id, msg.author.avatar);
-        }
 
         // Check if we need a date separator
         QDate msgDate = msg.timestamp.date();
@@ -813,12 +894,12 @@ void MainWindow::displayMessages()
             else
                 dateText = msgDate.toString("MMMM d, yyyy");
 
-            m_messageLog->append(QString(
-                                     "<div style='position: relative; margin: 16px 16px; height: 1px; background: #3f4147;'>"
-                                     "  <span style='position: absolute; left: 50%%; transform: translateX(-50%%); top: -9px; "
-                                     "         background: #36393f; padding: 2px 8px; color: #72767d; font-size: 12px; font-weight: 600;'>%1</span>"
-                                     "</div>")
-                                     .arg(dateText));
+            allHtml += QString(
+                           "<div style='position: relative; margin: 16px 16px; height: 1px; background: #3f4147;'>"
+                           "  <span style='position: absolute; left: 50%%; transform: translateX(-50%%); top: -9px; "
+                           "         background: #36393f; padding: 2px 8px; color: #72767d; font-size: 12px; font-weight: 600;'>%1</span>"
+                           "</div>")
+                           .arg(dateText);
 
             lastDate = msgDate;
             lastAuthorId = 0; // Reset grouping after date separator
@@ -836,11 +917,17 @@ void MainWindow::displayMessages()
             }
         }
 
-        m_messageLog->append(formatMessageHtml(msg, shouldGroup));
+        allHtml += formatMessageHtml(msg, shouldGroup);
 
         lastAuthorId = msg.author.id;
         lastTimestamp = msg.timestamp;
     }
+
+    // Append all HTML at once - much faster than appending each message individually
+    m_messageLog->setHtml(allHtml);
+
+    // Restore signal blocking state
+    scrollBar->blockSignals(wasBlocked);
 }
 
 QString MainWindow::formatMessageHtml(const Message &msg, bool grouped)
@@ -862,16 +949,17 @@ QString MainWindow::formatMessageHtml(const Message &msg, bool grouped)
                            "    </td>"
                            "  </tr>"
                            "</table>")
-                           .arg(msg.content.toHtmlEscaped().replace("\n", "<br>"));
+                           .arg(DiscordMarkdown::toHtml(msg.content));
 
         return html;
     }
 
     // Get avatar as base64 data URL or use default
     QString avatarData;
-    if (m_userAvatars.contains(msg.author.id))
+    QPixmap avatar = m_avatarCache->getAvatar(msg.author.id, msg.author.avatar);
+
+    if (!avatar.isNull())
     {
-        QPixmap avatar = m_userAvatars[msg.author.id];
         QByteArray ba;
         QBuffer buffer(&ba);
         buffer.open(QIODevice::WriteOnly);
@@ -912,59 +1000,9 @@ QString MainWindow::formatMessageHtml(const Message &msg, bool grouped)
                        .arg(avatarData)
                        .arg(msg.author.username.toHtmlEscaped())
                        .arg(timestamp)
-                       .arg(msg.content.toHtmlEscaped().replace("\n", "<br>"));
+                       .arg(DiscordMarkdown::toHtml(msg.content));
 
     return html;
-}
-
-QString MainWindow::getUserAvatarUrl(Snowflake userId, const QString &avatarHash) const
-{
-    if (avatarHash.isEmpty())
-        return QString();
-
-    // Discord CDN URL format: https://cdn.discordapp.com/avatars/{user_id}/{avatar_hash}.png
-    QString extension = avatarHash.startsWith("a_") ? ".gif" : ".png";
-    return QString("https://cdn.discordapp.com/avatars/%1/%2%3")
-        .arg(userId)
-        .arg(avatarHash)
-        .arg(extension);
-}
-
-void MainWindow::downloadUserAvatar(Snowflake userId, const QString &avatarHash)
-{
-    if (avatarHash.isEmpty())
-        return;
-
-    QString avatarUrl = getUserAvatarUrl(userId, avatarHash);
-    QNetworkAccessManager *networkManager = new QNetworkAccessManager(this);
-    QNetworkRequest request(avatarUrl);
-
-    QNetworkReply *reply = networkManager->get(request);
-    connect(reply, &QNetworkReply::finished, this, [this, reply, userId]()
-            {
-        if (reply->error() == QNetworkReply::NoError)
-        {
-            QByteArray imageData = reply->readAll();
-            QPixmap pixmap;
-            if (pixmap.loadFromData(imageData))
-            {
-                // Create circular avatar
-                QPixmap rounded(40, 40);
-                rounded.fill(Qt::transparent);
-                QPainter painter(&rounded);
-                painter.setRenderHint(QPainter::Antialiasing);
-
-                QPixmap scaled = pixmap.scaled(40, 40, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
-                painter.setBrush(QBrush(scaled));
-                painter.setPen(Qt::NoPen);
-                painter.drawEllipse(0, 0, 40, 40);
-
-                m_userAvatars[userId] = rounded;
-
-                // Don't refresh entire display - avatar will show on next message or reload
-            }
-        }
-        reply->deleteLater(); });
 }
 
 void MainWindow::onChannelDoubleClicked(QListWidgetItem *item)
@@ -1184,6 +1222,22 @@ void MainWindow::onCallButtonClicked()
         return;
     }
 
+    // Check if there's an incoming call we're answering
+    bool answeringIncomingCall = false;
+    const QList<Channel> &privateChannels = m_client->getPrivateChannels();
+    for (const Channel &channel : privateChannels)
+    {
+        if (channel.id == m_selectedChannelId && channel.hasActiveCall)
+        {
+            Snowflake myUserId = m_client->getUserId();
+            if (channel.callRingingUsers.contains(myUserId) && !m_isInCall && !m_isInVoice)
+            {
+                answeringIncomingCall = true;
+                break;
+            }
+        }
+    }
+
     if (m_isInCall || m_isInVoice)
     {
         // Leave the call
@@ -1211,9 +1265,23 @@ void MainWindow::onCallButtonClicked()
         updateCallButton();
         updateVoiceUI();
     }
+    else if (answeringIncomingCall)
+    {
+        // Answer incoming call
+        qDebug() << "Answering incoming call in channel:" << m_selectedChannelId;
+
+        m_isInCall = true;
+        m_isRinging = false; // We're answering, not ringing
+        m_currentCallChannelId = m_selectedChannelId;
+
+        // Join the voice channel (this answers the call)
+        m_client->joinVoiceChannel(Snowflake(0), m_selectedChannelId, m_isMuted, m_isDeafened);
+
+        updateCallButton();
+    }
     else
     {
-        // Start a call
+        // Start a new call
         qDebug() << "Starting call in channel:" << m_selectedChannelId;
 
         m_isInCall = true;
@@ -1224,7 +1292,6 @@ void MainWindow::onCallButtonClicked()
         m_client->startCall(m_selectedChannelId);
 
         // Get recipients to ring
-        const QList<Channel> &privateChannels = m_client->getPrivateChannels();
         for (const Channel &channel : privateChannels)
         {
             if (channel.id == m_selectedChannelId)
@@ -1258,11 +1325,33 @@ void MainWindow::onCallCreated(Snowflake channelId, const QList<Snowflake> &ring
 {
     qDebug() << "Call created in channel:" << channelId << "Ringing:" << ringing.size() << "users";
 
-    if (channelId == m_selectedChannelId)
+    Snowflake myUserId = m_client->getUserId();
+    bool weAreBeingRung = ringing.contains(myUserId);
+
+    // Always update the call state for this channel
+    if (m_currentCallChannelId == 0 || m_currentCallChannelId == channelId)
     {
-        m_isInCall = true;
         m_currentCallChannelId = channelId;
-        updateCallButton();
+
+        if (weAreBeingRung && !m_isInCall)
+        {
+            // Incoming call!
+            qDebug() << "Incoming call in channel" << channelId;
+            // Don't set m_isInCall yet - user needs to answer
+            // Just update the UI if we're viewing this channel
+            if (channelId == m_selectedChannelId)
+            {
+                updateCallButton();
+            }
+
+            // TODO: Show notification/ring sound for incoming call
+        }
+        else if (channelId == m_selectedChannelId || m_isInCall)
+        {
+            // We initiated this call or we're already tracking it
+            m_isInCall = true;
+            updateCallButton();
+        }
     }
 }
 
@@ -1270,17 +1359,32 @@ void MainWindow::onCallUpdated(Snowflake channelId, const QList<Snowflake> &ring
 {
     qDebug() << "Call updated in channel:" << channelId << "Ringing:" << ringing.size() << "users";
 
-    if (channelId == m_currentCallChannelId)
+    Snowflake myUserId = m_client->getUserId();
+    bool weAreBeingRung = ringing.contains(myUserId);
+
+    if (channelId == m_currentCallChannelId || channelId == m_selectedChannelId)
     {
-        // If ringing list is empty, someone answered
-        if (ringing.isEmpty() && m_isRinging)
+        // Check if someone answered (ringing list became empty or we were removed from it)
+        if (m_isRinging && (ringing.isEmpty() || !weAreBeingRung))
         {
-            qDebug() << "Someone answered the call!";
+            qDebug() << "Someone answered the call or we stopped ringing!";
             m_isRinging = false;
             m_ringingTimer->stop();
-            m_noAnswerTimer->stop(); // Cancel no-answer timeout
-            updateCallButton();
+            m_noAnswerTimer->stop();
         }
+
+        // Check if we just got added to ringing (incoming call scenario)
+        if (weAreBeingRung && !m_isInCall && !m_isRinging)
+        {
+            qDebug() << "We are now being rung in channel" << channelId;
+            m_currentCallChannelId = channelId;
+            if (channelId == m_selectedChannelId)
+            {
+                updateCallButton();
+            }
+        }
+
+        updateCallButton();
     }
 }
 
@@ -1347,7 +1451,31 @@ void MainWindow::updateCallButton()
     {
         m_callBtn->show();
 
-        if (m_isInCall || m_isInVoice)
+        // Check if there's an incoming call in this channel
+        bool incomingCall = false;
+        const QList<Channel> &privateChannels = m_client->getPrivateChannels();
+        for (const Channel &channel : privateChannels)
+        {
+            if (channel.id == m_selectedChannelId && channel.hasActiveCall)
+            {
+                Snowflake myUserId = m_client->getUserId();
+                if (channel.callRingingUsers.contains(myUserId) && !m_isInCall && !m_isInVoice)
+                {
+                    incomingCall = true;
+                    break;
+                }
+            }
+        }
+
+        if (incomingCall)
+        {
+            // Show "Answer" button for incoming calls
+            m_callBtn->setText("📞 Answer Call");
+            m_callBtn->setStyleSheet(
+                "QPushButton { background-color: #3BA55D; color: white; border-radius: 4px; padding: 8px 16px; font-weight: bold; animation: pulse 1s infinite; }"
+                "QPushButton:hover { background-color: #2D7D46; }");
+        }
+        else if (m_isInCall || m_isInVoice)
         {
             if (m_isRinging)
             {

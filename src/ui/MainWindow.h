@@ -12,6 +12,7 @@
 #include "models/Snowflake.h"
 #include "models/Message.h"
 #include "utils/TokenStorage.h"
+#include "utils/AvatarCache.h"
 
 class MainWindow : public QMainWindow
 {
@@ -25,6 +26,7 @@ private:
     DiscordClient *m_client;
     TokenStorage m_tokenStorage;
     AudioManager *m_audioManager;
+    AvatarCache *m_avatarCache;
 
     // UI Components
     QWidget *m_centralWidget;
@@ -47,7 +49,6 @@ private:
     QList<Message> m_currentMessages; // Messages for current channel
     bool m_isLoadingMessages;
     bool m_hasMoreMessages;
-    QMap<Snowflake, QPixmap> m_userAvatars; // Cache for user avatars
 
     // Voice state
     bool m_isInVoice;
@@ -72,8 +73,6 @@ private:
     void updateChannelList();
     void sortGuildList();
     void updateMessageInputPermissions();
-    void downloadUserAvatar(Snowflake userId, const QString &avatarHash);
-    QString getUserAvatarUrl(Snowflake userId, const QString &avatarHash) const;
     QString formatMessageHtml(const Message &msg, bool grouped = false);
     void onGuildSelected(QListWidgetItem *item);
     void onChannelSelected(QListWidgetItem *item);

@@ -39,6 +39,11 @@ struct Channel
     // For DMs
     QList<User> recipients;
 
+    // Call state for DM channels
+    bool hasActiveCall = false;
+    QList<Snowflake> callRingingUsers; // Users being rung
+    QList<Snowflake> callParticipants; // Users in the call
+
     bool isText() const
     {
         return type == (int)ChannelType::GUILD_TEXT || type == (int)ChannelType::DM || type == (int)ChannelType::GROUP_DM;

@@ -46,6 +46,8 @@ set(SOURCES
     src/ui/MainWindow.cpp
     src/ui/SettingsDialog.cpp
     src/utils/TokenStorage.cpp
+    src/utils/AvatarCache.cpp
+    src/utils/DiscordMarkdown.cpp
     src/audio/OpusCodec.cpp
     src/audio/AudioManager.cpp
 )
@@ -66,6 +68,7 @@ set(HEADERS
     src/audio/OpusCodec.h
     src/audio/AudioManager.h
     src/utils/TokenStorage.h
+    src/utils/AvatarCache.h
 )
 
 # Add resources

@@ -427,6 +427,20 @@ void DiscordClient::handleGatewayEvent(const QString &eventName, const QJsonObje
         {
             ringing.append(val.toString().toULongLong());
         }
+
+        // Update channel state
+        for (Channel &channel : m_privateChannels)
+        {
+            if (channel.id == channelId)
+            {
+                channel.hasActiveCall = true;
+                channel.callRingingUsers = ringing;
+                channel.callParticipants.clear(); // Fresh call, no participants yet
+                qDebug() << "Updated channel" << channelId << "call state: active, ringing" << ringing.size();
+                break;
+            }
+        }
+
         emit callCreated(channelId, ringing);
     }
     else if (eventName == "CALL_UPDATE")
@@ -438,11 +452,52 @@ void DiscordClient::handleGatewayEvent(const QString &eventName, const QJsonObje
         {
             ringing.append(val.toString().toULongLong());
         }
+
+        // Update channel state
+        for (Channel &channel : m_privateChannels)
+        {
+            if (channel.id == channelId)
+            {
+                channel.callRingingUsers = ringing;
+
+                // Parse voice states if present
+                if (data.contains("voice_states") && data["voice_states"].isArray())
+                {
+                    channel.callParticipants.clear();
+                    QJsonArray voiceStates = data["voice_states"].toArray();
+                    for (const QJsonValue &vsVal : voiceStates)
+                    {
+                        QJsonObject vsObj = vsVal.toObject();
+                        Snowflake userId = vsObj["user_id"].toString().toULongLong();
+                        channel.callParticipants.append(userId);
+                    }
+                    qDebug() << "Updated channel" << channelId << "participants:" << channel.callParticipants.size();
+                }
+
+                qDebug() << "Updated channel" << channelId << "call state: ringing" << ringing.size();
+                break;
+            }
+        }
+
         emit callUpdated(channelId, ringing);
     }
     else if (eventName == "CALL_DELETE")
     {
         Snowflake channelId = data["channel_id"].toString().toULongLong();
+
+        // Update channel state
+        for (Channel &channel : m_privateChannels)
+        {
+            if (channel.id == channelId)
+            {
+                channel.hasActiveCall = false;
+                channel.callRingingUsers.clear();
+                channel.callParticipants.clear();
+                qDebug() << "Updated channel" << channelId << "call state: inactive";
+                break;
+            }
+        }
+
         emit callDeleted(channelId);
     }
 }
@@ -482,6 +537,47 @@ void DiscordClient::handleReady(const QJsonObject &data)
             user.avatar = recipObj["avatar"].toString();
             user.bot = recipObj["bot"].toBool(false);
             channel.recipients.append(user);
+        }
+
+        // Parse call state if present
+        if (channelObj.contains("last_call") && !channelObj["last_call"].isNull())
+        {
+            QJsonObject callObj = channelObj["last_call"].toObject();
+
+            // Check if call is ended
+            if (callObj.contains("ended_timestamp") && !callObj["ended_timestamp"].isNull())
+            {
+                // Call has ended
+                channel.hasActiveCall = false;
+            }
+            else
+            {
+                // Call is still active
+                channel.hasActiveCall = true;
+
+                // Parse ringing users
+                if (callObj.contains("ringing") && callObj["ringing"].isArray())
+                {
+                    QJsonArray ringingArray = callObj["ringing"].toArray();
+                    for (const QJsonValue &ringingVal : ringingArray)
+                    {
+                        channel.callRingingUsers.append(ringingVal.toString().toULongLong());
+                    }
+                }
+
+                // Parse participants (voice states)
+                if (callObj.contains("participants") && callObj["participants"].isArray())
+                {
+                    QJsonArray participantsArray = callObj["participants"].toArray();
+                    for (const QJsonValue &participantVal : participantsArray)
+                    {
+                        channel.callParticipants.append(participantVal.toString().toULongLong());
+                    }
+                }
+
+                qDebug() << "Channel" << channel.id << "has active call. Ringing:"
+                         << channel.callRingingUsers.size() << "Participants:" << channel.callParticipants.size();
+            }
         }
 
         m_privateChannels.append(channel);
