@@ -51,6 +51,11 @@ public:
     void joinVoiceChannel(Snowflake guildId, Snowflake channelId, bool mute = false, bool deaf = false);
     void leaveVoiceChannel(Snowflake guildId);
 
+    // DM Calls
+    void startCall(Snowflake channelId);
+    void ringCall(Snowflake channelId, const QList<Snowflake> &recipients);
+    void stopRinging(Snowflake channelId);
+
     // Icon management
     void downloadGuildIcon(Snowflake guildId, const QString &iconHash);
     QString getGuildIconUrl(Snowflake guildId, const QString &iconHash) const;
@@ -73,6 +78,11 @@ signals:
     void guildCreated(const Guild &guild);
     void channelCreated(const Channel &channel);
     void guildIconLoaded(Snowflake guildId, const QPixmap &icon);
+
+    // Call signals
+    void callCreated(Snowflake channelId, const QList<Snowflake> &ringing);
+    void callUpdated(Snowflake channelId, const QList<Snowflake> &ringing);
+    void callDeleted(Snowflake channelId);
 
 private:
     QNetworkAccessManager *m_networkManager;

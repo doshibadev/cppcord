@@ -38,6 +38,7 @@ private:
     QPushButton *m_settingsBtn;
     QPushButton *m_muteBtn;
     QPushButton *m_deafenBtn;
+    QPushButton *m_callBtn; // Call/Leave Call button for DMs
     QLabel *m_usernameLabel;
 
     // State
@@ -53,6 +54,13 @@ private:
     bool m_isMuted;
     bool m_isDeafened;
     Snowflake m_currentVoiceChannelId;
+
+    // Call state (for DMs)
+    bool m_isInCall;
+    bool m_isRinging;
+    QTimer *m_ringingTimer;
+    QTimer *m_noAnswerTimer;
+    Snowflake m_currentCallChannelId;
 
     void setupUI();
     void connectSignals();
@@ -81,6 +89,15 @@ private:
     void updateVoiceUI();
     void onMuteToggled();
     void onDeafenToggled();
+
+    // Call methods (DM voice)
+    void onCallButtonClicked();
+    void onCallCreated(Snowflake channelId, const QList<Snowflake> &ringing);
+    void onCallUpdated(Snowflake channelId, const QList<Snowflake> &ringing);
+    void onCallDeleted(Snowflake channelId);
+    void onRingingTimeout();
+    void onNoAnswerTimeout();
+    void updateCallButton();
 
     // Logout
     void onLogoutClicked();

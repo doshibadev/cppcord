@@ -33,6 +33,11 @@ signals:
     void voiceStateUpdate(const QJsonObject &data);
     void voiceServerUpdate(const QString &token, Snowflake guildId, const QString &endpoint, const QString &sessionId);
 
+    // Call signals (for DM voice)
+    void callCreated(const QJsonObject &data);
+    void callUpdated(const QJsonObject &data);
+    void callDeleted(const QJsonObject &data);
+
 private slots:
     void onConnected();
     void onDisconnected();
@@ -49,6 +54,10 @@ private:
     QString m_voiceSessionId; // Session ID from VOICE_STATE_UPDATE
     VoiceClient *m_voiceClient;
     DiscordClient *m_discordClient;
+
+    // Track current voice connection for DM support
+    Snowflake m_pendingVoiceGuildId;
+    Snowflake m_pendingVoiceChannelId;
 
     void handlePayload(const QJsonObject &payload);
     void handleHello(const QJsonObject &data);

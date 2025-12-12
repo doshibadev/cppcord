@@ -418,6 +418,33 @@ void DiscordClient::handleGatewayEvent(const QString &eventName, const QJsonObje
     {
         handleMessageCreate(data);
     }
+    else if (eventName == "CALL_CREATE")
+    {
+        Snowflake channelId = data["channel_id"].toString().toULongLong();
+        QList<Snowflake> ringing;
+        QJsonArray ringingArray = data["ringing"].toArray();
+        for (const QJsonValue &val : ringingArray)
+        {
+            ringing.append(val.toString().toULongLong());
+        }
+        emit callCreated(channelId, ringing);
+    }
+    else if (eventName == "CALL_UPDATE")
+    {
+        Snowflake channelId = data["channel_id"].toString().toULongLong();
+        QList<Snowflake> ringing;
+        QJsonArray ringingArray = data["ringing"].toArray();
+        for (const QJsonValue &val : ringingArray)
+        {
+            ringing.append(val.toString().toULongLong());
+        }
+        emit callUpdated(channelId, ringing);
+    }
+    else if (eventName == "CALL_DELETE")
+    {
+        Snowflake channelId = data["channel_id"].toString().toULongLong();
+        emit callDeleted(channelId);
+    }
 }
 
 void DiscordClient::handleReady(const QJsonObject &data)
@@ -626,6 +653,40 @@ void DiscordClient::joinVoiceChannel(Snowflake guildId, Snowflake channelId, boo
 void DiscordClient::leaveVoiceChannel(Snowflake guildId)
 {
     m_gateway->leaveVoiceChannel(guildId);
+}
+
+void DiscordClient::startCall(Snowflake channelId)
+{
+    // For DM calls, join voice with null guild_id (channel_id is used as server_id)
+    m_gateway->joinVoiceChannel(Snowflake(0), channelId, false, false);
+}
+
+void DiscordClient::ringCall(Snowflake channelId, const QList<Snowflake> &recipients)
+{
+    // Ring the recipients - POST /channels/{channel.id}/call/ring
+    QJsonObject payload;
+    QJsonArray recipientsArray;
+    for (Snowflake recipientId : recipients)
+    {
+        recipientsArray.append(QString::number(recipientId));
+    }
+    payload["recipients"] = recipientsArray;
+
+    QNetworkRequest request = createRequest(QString("/channels/%1/call/ring").arg(channelId));
+    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+
+    QNetworkReply *reply = m_networkManager->post(request, QJsonDocument(payload).toJson());
+    connect(reply, &QNetworkReply::finished, reply, &QNetworkReply::deleteLater);
+}
+
+void DiscordClient::stopRinging(Snowflake channelId)
+{
+    // Stop ringing - POST /channels/{channel.id}/call/stop-ringing
+    QNetworkRequest request = createRequest(QString("/channels/%1/call/stop-ringing").arg(channelId));
+    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+
+    QNetworkReply *reply = m_networkManager->post(request, QByteArray());
+    connect(reply, &QNetworkReply::finished, reply, &QNetworkReply::deleteLater);
 }
 
 QString DiscordClient::getGuildIconUrl(Snowflake guildId, const QString &iconHash) const

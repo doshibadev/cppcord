@@ -15,6 +15,7 @@
 #include <QNetworkReply>
 #include <QBuffer>
 #include <QLocale>
+#include <QTimer>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent),
@@ -27,10 +28,24 @@ MainWindow::MainWindow(QWidget *parent)
       m_isInVoice(false),
       m_isMuted(false),
       m_isDeafened(false),
-      m_currentVoiceChannelId(0)
+      m_currentVoiceChannelId(0),
+      m_isInCall(false),
+      m_isRinging(false),
+      m_currentCallChannelId(0)
 {
     setWindowTitle("CPPCord - Discord Client");
     resize(1200, 800);
+
+    // Initialize timers for calling
+    m_ringingTimer = new QTimer(this);
+    m_ringingTimer->setSingleShot(true);
+    m_ringingTimer->setInterval(10000); // 10 seconds
+    connect(m_ringingTimer, &QTimer::timeout, this, &MainWindow::onRingingTimeout);
+
+    m_noAnswerTimer = new QTimer(this);
+    m_noAnswerTimer->setSingleShot(true);
+    m_noAnswerTimer->setInterval(300000); // 5 minutes
+    connect(m_noAnswerTimer, &QTimer::timeout, this, &MainWindow::onNoAnswerTimeout);
 
     // Initialize audio manager
     if (!m_audioManager->initialize())
@@ -149,6 +164,25 @@ void MainWindow::setupUI()
     chatLayout->setContentsMargins(0, 0, 0, 0);
     chatLayout->setSpacing(0);
 
+    // Top bar with call button (for DMs)
+    QWidget *topBar = new QWidget(chatPanel);
+    topBar->setFixedHeight(48);
+    topBar->setStyleSheet("QWidget { background-color: #36393F; border-bottom: 1px solid #202225; }");
+    QHBoxLayout *topBarLayout = new QHBoxLayout(topBar);
+    topBarLayout->setContentsMargins(16, 0, 16, 0);
+
+    topBarLayout->addStretch();
+
+    m_callBtn = new QPushButton("📞 Call", topBar);
+    m_callBtn->setStyleSheet(
+        "QPushButton { background-color: #3BA55D; color: white; border-radius: 4px; padding: 8px 16px; font-weight: bold; }"
+        "QPushButton:hover { background-color: #2D7D46; }");
+    m_callBtn->setFixedHeight(32);
+    m_callBtn->hide(); // Hidden by default, shown for DM channels
+    topBarLayout->addWidget(m_callBtn);
+
+    chatLayout->addWidget(topBar);
+
     // Message display with scroll to bottom button
     QWidget *messageContainer = new QWidget(chatPanel);
     QVBoxLayout *messageContainerLayout = new QVBoxLayout(messageContainer);
@@ -200,9 +234,15 @@ void MainWindow::connectSignals()
     connect(m_settingsBtn, &QPushButton::clicked, this, &MainWindow::onSettingsClicked);
     connect(m_muteBtn, &QPushButton::clicked, this, &MainWindow::onMuteToggled);
     connect(m_deafenBtn, &QPushButton::clicked, this, &MainWindow::onDeafenToggled);
+    connect(m_callBtn, &QPushButton::clicked, this, &MainWindow::onCallButtonClicked);
 
     // Voice client connections
     connect(m_client->getVoiceClient(), &VoiceClient::ready, this, &MainWindow::onVoiceReady);
+
+    // Call event connections
+    connect(m_client, &DiscordClient::callCreated, this, &MainWindow::onCallCreated);
+    connect(m_client, &DiscordClient::callUpdated, this, &MainWindow::onCallUpdated);
+    connect(m_client, &DiscordClient::callDeleted, this, &MainWindow::onCallDeleted);
 
     // Audio manager connections - send audio to voice client
     connect(m_audioManager, &AudioManager::opusDataReady, m_client->getVoiceClient(), &VoiceClient::sendAudio);
@@ -382,6 +422,7 @@ void MainWindow::onGuildSelected(QListWidgetItem *item)
     }
 
     updateChannelList();
+    updateCallButton(); // Update call button when switching between guilds and DMs
 }
 
 void MainWindow::onChannelSelected(QListWidgetItem *item)
@@ -406,6 +447,9 @@ void MainWindow::onChannelSelected(QListWidgetItem *item)
 
         // Update message input permissions
         updateMessageInputPermissions();
+
+        // Update call button visibility/state
+        updateCallButton();
     }
 }
 
@@ -1116,5 +1160,213 @@ void MainWindow::onSettingsClicked()
 
         // TODO: Apply device changes to AudioManager
         // For now, just log the selection
+    }
+}
+void MainWindow::onCallButtonClicked()
+{
+    // Check if we're in a DM channel
+    if (m_selectedGuildId != 0)
+    {
+        qDebug() << "Call button clicked but not in a DM channel";
+        return;
+    }
+
+    if (m_selectedChannelId == 0)
+    {
+        qDebug() << "No DM channel selected";
+        return;
+    }
+
+    if (m_isInCall || m_isInVoice)
+    {
+        // Leave the call
+        qDebug() << "Leaving call in channel:" << m_selectedChannelId;
+
+        // Stop timers
+        m_ringingTimer->stop();
+        m_noAnswerTimer->stop();
+
+        // Stop ringing if we were ringing
+        if (m_isRinging)
+        {
+            m_client->stopRinging(m_selectedChannelId);
+        }
+
+        // Leave voice
+        m_client->leaveVoiceChannel(Snowflake(0)); // DM calls use null guild_id
+
+        m_isInCall = false;
+        m_isRinging = false;
+        m_isInVoice = false;
+        m_currentCallChannelId = 0;
+        m_currentVoiceChannelId = 0;
+
+        updateCallButton();
+        updateVoiceUI();
+    }
+    else
+    {
+        // Start a call
+        qDebug() << "Starting call in channel:" << m_selectedChannelId;
+
+        m_isInCall = true;
+        m_isRinging = true;
+        m_currentCallChannelId = m_selectedChannelId;
+
+        // Join voice (this will create the call if it doesn't exist)
+        m_client->startCall(m_selectedChannelId);
+
+        // Get recipients to ring
+        const QList<Channel> &privateChannels = m_client->getPrivateChannels();
+        for (const Channel &channel : privateChannels)
+        {
+            if (channel.id == m_selectedChannelId)
+            {
+                // Ring all recipients
+                QList<Snowflake> recipientIds;
+                for (const User &recipient : channel.recipients)
+                {
+                    recipientIds.append(recipient.id);
+                }
+
+                if (!recipientIds.isEmpty())
+                {
+                    m_client->ringCall(m_selectedChannelId, recipientIds);
+
+                    // Start ringing timer (10 seconds)
+                    m_ringingTimer->start();
+
+                    // Start no-answer timer (5 minutes)
+                    m_noAnswerTimer->start();
+                }
+                break;
+            }
+        }
+
+        updateCallButton();
+    }
+}
+
+void MainWindow::onCallCreated(Snowflake channelId, const QList<Snowflake> &ringing)
+{
+    qDebug() << "Call created in channel:" << channelId << "Ringing:" << ringing.size() << "users";
+
+    if (channelId == m_selectedChannelId)
+    {
+        m_isInCall = true;
+        m_currentCallChannelId = channelId;
+        updateCallButton();
+    }
+}
+
+void MainWindow::onCallUpdated(Snowflake channelId, const QList<Snowflake> &ringing)
+{
+    qDebug() << "Call updated in channel:" << channelId << "Ringing:" << ringing.size() << "users";
+
+    if (channelId == m_currentCallChannelId)
+    {
+        // If ringing list is empty, someone answered
+        if (ringing.isEmpty() && m_isRinging)
+        {
+            qDebug() << "Someone answered the call!";
+            m_isRinging = false;
+            m_ringingTimer->stop();
+            m_noAnswerTimer->stop(); // Cancel no-answer timeout
+            updateCallButton();
+        }
+    }
+}
+
+void MainWindow::onCallDeleted(Snowflake channelId)
+{
+    qDebug() << "Call deleted in channel:" << channelId;
+
+    if (channelId == m_currentCallChannelId)
+    {
+        m_isInCall = false;
+        m_isRinging = false;
+        m_isInVoice = false;
+        m_currentCallChannelId = 0;
+        m_currentVoiceChannelId = 0;
+
+        m_ringingTimer->stop();
+        m_noAnswerTimer->stop();
+
+        updateCallButton();
+        updateVoiceUI();
+
+        qDebug() << "Call ended";
+    }
+}
+
+void MainWindow::onRingingTimeout()
+{
+    qDebug() << "Ringing timeout - stopping ring";
+
+    if (m_isRinging)
+    {
+        m_isRinging = false;
+        m_client->stopRinging(m_currentCallChannelId);
+        updateCallButton();
+    }
+}
+
+void MainWindow::onNoAnswerTimeout()
+{
+    qDebug() << "No answer timeout - disconnecting from call";
+
+    if (m_isInCall)
+    {
+        // Nobody answered after 5 minutes, disconnect
+        m_client->leaveVoiceChannel(Snowflake(0));
+
+        m_isInCall = false;
+        m_isRinging = false;
+        m_isInVoice = false;
+        m_currentCallChannelId = 0;
+        m_currentVoiceChannelId = 0;
+
+        updateCallButton();
+        updateVoiceUI();
+
+        qDebug() << "Auto-disconnected: no answer after 5 minutes";
+    }
+}
+
+void MainWindow::updateCallButton()
+{
+    // Only show call button in DM channels
+    if (m_selectedGuildId == 0 && m_selectedChannelId != 0)
+    {
+        m_callBtn->show();
+
+        if (m_isInCall || m_isInVoice)
+        {
+            if (m_isRinging)
+            {
+                m_callBtn->setText("📞 Ringing...");
+                m_callBtn->setStyleSheet(
+                    "QPushButton { background-color: #FAA61A; color: white; border-radius: 4px; padding: 8px 16px; font-weight: bold; }"
+                    "QPushButton:hover { background-color: #E09318; }");
+            }
+            else
+            {
+                m_callBtn->setText("📴 Leave Call");
+                m_callBtn->setStyleSheet(
+                    "QPushButton { background-color: #ED4245; color: white; border-radius: 4px; padding: 8px 16px; font-weight: bold; }"
+                    "QPushButton:hover { background-color: #C03537; }");
+            }
+        }
+        else
+        {
+            m_callBtn->setText("📞 Call");
+            m_callBtn->setStyleSheet(
+                "QPushButton { background-color: #3BA55D; color: white; border-radius: 4px; padding: 8px 16px; font-weight: bold; }"
+                "QPushButton:hover { background-color: #2D7D46; }");
+        }
+    }
+    else
+    {
+        m_callBtn->hide();
     }
 }

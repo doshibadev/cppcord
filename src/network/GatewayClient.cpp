@@ -202,7 +202,7 @@ void GatewayClient::handleDispatch(const QJsonObject &payload)
         // Check if this is our user's voice state
         Snowflake userId = data["user_id"].toString().toULongLong();
         Snowflake currentUserId = m_discordClient ? m_discordClient->getUserId() : 0;
-        
+
         qDebug() << "Voice State Update for User:" << userId << "Current User:" << currentUserId;
 
         if (userId == currentUserId)
@@ -221,8 +221,22 @@ void GatewayClient::handleDispatch(const QJsonObject &payload)
     {
         qDebug() << "VOICE_SERVER_UPDATE raw data:" << QJsonDocument(data).toJson(QJsonDocument::Compact);
         QString token = data["token"].toString();
-        Snowflake guildId = data["guild_id"].toString().toULongLong();
         QString endpoint = data["endpoint"].toString();
+
+        // For DMs, guild_id is null - use channel_id as server_id instead
+        Snowflake serverId = 0;
+        if (data["guild_id"].isNull() || data["guild_id"].toString().isEmpty())
+        {
+            // DM call - use the pending channel_id as server_id
+            serverId = m_pendingVoiceChannelId;
+            qDebug() << "DM voice call - using channel_id as server_id:" << serverId;
+        }
+        else
+        {
+            serverId = data["guild_id"].toString().toULongLong();
+            qDebug() << "Guild voice - server_id (guild_id):" << serverId;
+        }
+
         qDebug() << "VOICE_SERVER_UPDATE - Token length:" << token.length() << "Token:" << token;
         qDebug() << "VOICE_SERVER_UPDATE - Token type:" << data["token"].type();
 
@@ -230,7 +244,22 @@ void GatewayClient::handleDispatch(const QJsonObject &payload)
         QString sessionToUse = m_voiceSessionId.isEmpty() ? m_sessionId : m_voiceSessionId;
         qDebug() << "Using session ID for voice:" << sessionToUse;
 
-        emit voiceServerUpdate(token, guildId, endpoint, sessionToUse);
+        emit voiceServerUpdate(token, serverId, endpoint, sessionToUse);
+    }
+    else if (eventName == "CALL_CREATE")
+    {
+        qDebug() << "CALL_CREATE:" << QJsonDocument(data).toJson(QJsonDocument::Compact);
+        emit callCreated(data);
+    }
+    else if (eventName == "CALL_UPDATE")
+    {
+        qDebug() << "CALL_UPDATE:" << QJsonDocument(data).toJson(QJsonDocument::Compact);
+        emit callUpdated(data);
+    }
+    else if (eventName == "CALL_DELETE")
+    {
+        qDebug() << "CALL_DELETE:" << QJsonDocument(data).toJson(QJsonDocument::Compact);
+        emit callDeleted(data);
     }
     // Note: MESSAGE_CREATE handling for debug log moved to DiscordClient or kept here?
     // Let's keep the legacy messageReceived for now to not break the UI until we refactor MainWindow
@@ -265,11 +294,24 @@ void GatewayClient::leaveVoiceChannel(Snowflake guildId)
 
 void GatewayClient::sendVoiceStateUpdate(Snowflake guildId, Snowflake channelId, bool mute, bool deaf)
 {
+    // Track pending voice connection for server_id resolution
+    m_pendingVoiceGuildId = guildId;
+    m_pendingVoiceChannelId = channelId;
+
     QJsonObject payload;
     payload["op"] = 4; // Voice State Update
 
     QJsonObject data;
-    data["guild_id"] = QString::number(guildId);
+
+    // For DM calls, guild_id should be null
+    if (guildId == 0)
+    {
+        data["guild_id"] = QJsonValue::Null;
+    }
+    else
+    {
+        data["guild_id"] = QString::number(guildId);
+    }
 
     if (channelId == 0)
     {
@@ -284,5 +326,6 @@ void GatewayClient::sendVoiceStateUpdate(Snowflake guildId, Snowflake channelId,
     data["self_deaf"] = deaf;
     payload["d"] = data;
 
+    qDebug() << "Voice State Update:" << QJsonDocument(payload).toJson(QJsonDocument::Compact);
     m_socket->sendTextMessage(QJsonDocument(payload).toJson(QJsonDocument::Compact));
 }
