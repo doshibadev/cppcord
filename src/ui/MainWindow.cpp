@@ -851,13 +851,17 @@ QString MainWindow::formatMessageHtml(const Message &msg, bool grouped)
 
     if (grouped)
     {
-        // Grouped message - indent to align with first message content
+        // Grouped message - indent to align with first message content using table
         QString html = QString(
-                           "<div style='margin: 0 16px 0 16px; padding: 0; display: flex;'>"
-                           "  <div style='width: 40px; flex-shrink: 0;'></div>" // Avatar space
-                           "  <div style='width: 16px; flex-shrink: 0;'></div>" // Margin space
-                           "  <div style='flex: 1; color: #dcddde; font-size: 15px; line-height: 1.375; word-wrap: break-word;'>%1</div>"
-                           "</div>")
+                           "<table style='margin: 0 16px 0 16px; border-collapse: collapse; width: calc(100%% - 32px);' cellspacing='0' cellpadding='0'>"
+                           "  <tr>"
+                           "    <td style='width: 40px; padding: 0;'></td>" // Avatar space
+                           "    <td style='width: 16px; padding: 0;'></td>" // Margin space
+                           "    <td style='vertical-align: top; padding: 0;'>"
+                           "      <div style='color: #dcddde; font-size: 15px; line-height: 1.375; word-wrap: break-word;'>%1</div>"
+                           "    </td>"
+                           "  </tr>"
+                           "</table>")
                            .arg(msg.content.toHtmlEscaped().replace("\n", "<br>"));
 
         return html;
@@ -888,20 +892,23 @@ QString MainWindow::formatMessageHtml(const Message &msg, bool grouped)
     }
 
     // First message in group - show avatar, username and timestamp
+    // Using table layout for better QTextDocument support
     QString html = QString(
-                       "<div style='margin: 16px 16px 0 16px; display: flex;'>"
-                       "  <div style='width: 40px; flex-shrink: 0;'>"
-                       "    <img src='%1' width='40' height='40' style='border-radius: 50%%;'/>"
-                       "  </div>"
-                       "  <div style='width: 16px; flex-shrink: 0;'></div>" // Fixed margin
-                       "  <div style='flex: 1;'>"
-                       "    <div style='margin-bottom: 2px;'>"
-                       "      <span style='color: #ffffff; font-weight: 600; font-size: 16px;'>%2</span>"
-                       "      <span style='color: #a3a6aa; font-size: 12px; margin-left: 8px; font-weight: 400;'>%3</span>"
-                       "    </div>"
-                       "    <div style='color: #dcddde; font-size: 15px; line-height: 1.375; word-wrap: break-word;'>%4</div>"
-                       "  </div>"
-                       "</div>")
+                       "<table style='margin: 16px 16px 0 16px; border-collapse: collapse; width: calc(100%% - 32px);' cellspacing='0' cellpadding='0'>"
+                       "  <tr>"
+                       "    <td style='width: 40px; vertical-align: top; padding: 0;'>"
+                       "      <img src='%1' width='40' height='40' style='border-radius: 50%%;'/>"
+                       "    </td>"
+                       "    <td style='width: 16px; padding: 0;'></td>"
+                       "    <td style='vertical-align: top; padding: 0;'>"
+                       "      <div style='margin-bottom: 2px;'>"
+                       "        <span style='color: #ffffff; font-weight: 600; font-size: 16px;'>%2</span>"
+                       "        <span style='color: #a3a6aa; font-size: 12px; margin-left: 8px; font-weight: 400;'>%3</span>"
+                       "      </div>"
+                       "      <div style='color: #dcddde; font-size: 15px; line-height: 1.375; word-wrap: break-word;'>%4</div>"
+                       "    </td>"
+                       "  </tr>"
+                       "</table>")
                        .arg(avatarData)
                        .arg(msg.author.username.toHtmlEscaped())
                        .arg(timestamp)
